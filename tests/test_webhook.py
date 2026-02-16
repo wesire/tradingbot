@@ -143,7 +143,7 @@ def test_webhook_auth_validate_secret():
 
 def test_webhook_auth_validate_timestamp():
     """Test timestamp validation."""
-    auth = WebhookAuth(max_age_seconds=30)
+    auth = WebhookAuth(shared_secret='test_secret', max_age_seconds=30)
     
     # Current timestamp should be valid
     current_ts = int(datetime.now().timestamp())
@@ -164,7 +164,7 @@ def test_webhook_auth_validate_timestamp():
 
 def test_webhook_auth_validate_nonce():
     """Test nonce validation for replay attack prevention."""
-    auth = WebhookAuth()
+    auth = WebhookAuth(shared_secret='test_secret')
     
     # First use of nonce should be valid
     is_valid, msg = auth.validate_nonce('nonce_1')
@@ -182,7 +182,7 @@ def test_webhook_auth_validate_nonce():
 
 def test_webhook_auth_rate_limiting():
     """Test rate limiting per IP."""
-    auth = WebhookAuth()
+    auth = WebhookAuth(shared_secret='test_secret')
     auth.rate_limit_max_requests = 5
     
     client_ip = '192.168.1.1'

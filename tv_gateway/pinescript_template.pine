@@ -1,0 +1,194 @@
+//@version=5
+indicator("BTC Scalper Signal Generator", overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WEBHOOK CONFIGURATION
+// ══════════════════════════════════════════════════════════════════════════════
+webhook_url = input.string("https://your-webhook-url.com/tv/webhook", "Webhook URL")
+webhook_secret = input.string("your_webhook_secret_here", "Webhook Secret")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STRATEGY PARAMETERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Regime Filter (Higher Timeframe)
+htf_ema_fast = input.int(50, "HTF EMA Fast", minval=1)
+htf_ema_slow = input.int(200, "HTF EMA Slow", minval=1)
+adx_threshold = input.int(25, "ADX Threshold", minval=1)
+adx_period = input.int(14, "ADX Period", minval=1)
+
+// Entry Signals
+entry_ema_period = input.int(21, "Entry EMA Period", minval=1)
+rsi_period = input.int(14, "RSI Period", minval=1)
+rsi_long_threshold = input.int(40, "RSI Long Threshold", minval=1, maxval=100)
+rsi_short_threshold = input.int(60, "RSI Short Threshold", minval=1, maxval=100)
+
+// Filters
+volume_multiplier = input.float(1.5, "Volume Multiplier", minval=0.1)
+volume_ma_period = input.int(20, "Volume MA Period", minval=1)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INDICATOR CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Higher Timeframe Regime
+htf_ema_fast_val = request.security(syminfo.tickerid, "60", ta.ema(close, htf_ema_fast))
+htf_ema_slow_val = request.security(syminfo.tickerid, "60", ta.ema(close, htf_ema_slow))
+
+// ADX Calculation
+[diPlus, diMinus, adx_val] = ta.dmi(adx_period, adx_period)
+
+// Regime States
+regime_bullish = htf_ema_fast_val > htf_ema_slow_val and adx_val > adx_threshold
+regime_bearish = htf_ema_fast_val < htf_ema_slow_val and adx_val > adx_threshold
+regime_neutral = not regime_bullish and not regime_bearish
+
+// Entry EMA
+entry_ema = ta.ema(close, entry_ema_period)
+
+// RSI
+rsi = ta.rsi(close, rsi_period)
+
+// Volume Filter
+volume_ma = ta.sma(volume, volume_ma_period)
+volume_spike = volume > volume_ma * volume_multiplier
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNAL GENERATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Long Entry Conditions
+long_regime = regime_bullish
+long_pullback = close <= entry_ema * 1.01  // Within 1% of EMA
+long_rsi_cross = ta.crossover(rsi, rsi_long_threshold)
+long_volume = volume_spike
+
+long_signal = long_regime and long_pullback and long_rsi_cross and long_volume
+
+// Short Entry Conditions
+short_regime = regime_bearish
+short_bounce = close >= entry_ema * 0.99  // Within 1% of EMA
+short_rsi_cross = ta.crossunder(rsi, rsi_short_threshold)
+short_volume = volume_spike
+
+short_signal = short_regime and short_bounce and short_rsi_cross and short_volume
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CONFIDENCE SCORING
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Calculate confidence based on signal strength (0.0 to 1.0)
+calc_confidence(is_long) =>
+    confidence = 0.5  // Base confidence
+    
+    // ADX contribution (stronger trend = higher confidence)
+    if adx_val > adx_threshold * 1.5
+        confidence := confidence + 0.2
+    else if adx_val > adx_threshold
+        confidence := confidence + 0.1
+    
+    // Volume contribution
+    vol_ratio = volume / volume_ma
+    if vol_ratio > volume_multiplier * 1.5
+        confidence := confidence + 0.15
+    else if vol_ratio > volume_multiplier
+        confidence := confidence + 0.10
+    
+    // RSI divergence from threshold
+    if is_long
+        rsi_strength = (rsi - rsi_long_threshold) / 10.0
+        confidence := confidence + math.min(rsi_strength * 0.1, 0.15)
+    else
+        rsi_strength = (rsi_short_threshold - rsi) / 10.0
+        confidence := confidence + math.min(rsi_strength * 0.1, 0.15)
+    
+    // Cap at 1.0
+    math.min(confidence, 1.0)
+
+long_confidence = long_signal ? calc_confidence(true) : 0.0
+short_confidence = short_signal ? calc_confidence(false) : 0.0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WEBHOOK PAYLOAD GENERATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Generate unique nonce (using timestamp + bar index)
+generate_nonce() =>
+    str.tostring(time) + "_" + str.tostring(bar_index)
+
+// Create JSON payload for webhook
+create_webhook_payload(side, confidence_val) =>
+    nonce = generate_nonce()
+    timestamp = math.floor(timenow / 1000)  // Unix timestamp in seconds
+    
+    payload = '{'
+    payload := payload + '"symbol": "' + syminfo.ticker + '",'
+    payload := payload + '"timeframe": "' + timeframe.period + '",'
+    payload := payload + '"side": "' + side + '",'
+    payload := payload + '"setup_id": "ema_rsi_regime",'
+    payload := payload + '"confidence": ' + str.tostring(confidence_val, '#.##') + ','
+    payload := payload + '"price": ' + str.tostring(close, '#.##') + ','
+    payload := payload + '"event_time": "' + str.tostring(time) + '",'
+    payload := payload + '"secret": "' + webhook_secret + '",'
+    payload := payload + '"timestamp": ' + str.tostring(timestamp) + ','
+    payload := payload + '"nonce": "' + nonce + '",'
+    payload := payload + '"indicators": {'
+    payload := payload + '"rsi": ' + str.tostring(rsi, '#.##') + ','
+    payload := payload + '"adx": ' + str.tostring(adx_val, '#.##') + ','
+    payload := payload + '"ema": ' + str.tostring(entry_ema, '#.##') + ','
+    payload := payload + '"volume_ratio": ' + str.tostring(volume / volume_ma, '#.##')
+    payload := payload + '}'
+    payload := payload + '}'
+    
+    payload
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERT CONDITIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Alert for long signals
+if long_signal
+    long_payload = create_webhook_payload("long", long_confidence)
+    alert(long_payload, alert.freq_once_per_bar)
+
+// Alert for short signals
+if short_signal
+    short_payload = create_webhook_payload("short", short_confidence)
+    alert(short_payload, alert.freq_once_per_bar)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VISUALIZATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Plot EMAs
+plot(htf_ema_fast_val, "HTF EMA Fast", color=color.blue, linewidth=2)
+plot(htf_ema_slow_val, "HTF EMA Slow", color=color.red, linewidth=2)
+plot(entry_ema, "Entry EMA", color=color.orange, linewidth=1)
+
+// Background color for regime
+bgcolor(regime_bullish ? color.new(color.green, 95) : 
+        regime_bearish ? color.new(color.red, 95) : 
+        color.new(color.gray, 95))
+
+// Plot signals
+plotshape(long_signal, "Long Signal", shape.triangleup, location.belowbar, 
+          color.new(color.green, 0), size=size.small)
+plotshape(short_signal, "Short Signal", shape.triangledown, location.abovebar, 
+          color.new(color.red, 0), size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SETUP INSTRUCTIONS (in comment for reference)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ALERT SETUP STEPS:
+// 1. Add this indicator to your BTC/USDT chart (use 5m or 15m timeframe)
+// 2. Click "Create Alert" button
+// 3. Condition: Select this indicator and "Any alert() function call"
+// 4. Alert actions: Webhook URL = your gateway endpoint
+// 5. Message: {{plot("ALERT_MESSAGE")}}
+// 6. Set "Once Per Bar Close" for alert frequency
+// 7. Enable "Webhook URL" in alert settings
+// 8. Save alert
+
+// The script will automatically send JSON payloads to your webhook gateway
+// with all required fields including timestamp, nonce, and secret for authentication

@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment & Secrets
+.env
+.env.local
+*.key
+*.pem
+config.json
+secrets.json
+
+# Freqtrade
+user_data/
+*.sqlite
+*.db
+*.db-journal
+
+# Data & Artifacts
+bot/data/*.json
+bot/data/*.feather
+artifacts/*.png
+artifacts/*.csv
+artifacts/*.json
+artifacts/*.html
+artifacts/report.md
+!artifacts/.gitkeep
+!artifacts/champion/.gitkeep
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Docker
+docker-compose.override.yml
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak

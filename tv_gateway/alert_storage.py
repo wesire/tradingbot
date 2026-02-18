@@ -2,7 +2,7 @@
 Alert storage and persistence layer with full lifecycle management.
 Provides idempotent storage, dedupe, and status tracking for TradingView alerts.
 """
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 import sqlite3
@@ -208,7 +208,7 @@ class AlertStorage:
         
         logger.info(f"Migrated {migrated_count} alerts to Phase 2 schema")
     
-    def store_alert(self, alert: Alert) -> Tuple[bool, Optional[int], Optional[str]]:
+    def store_alert(self, alert: Alert) -> tuple[bool, Optional[int], Optional[str]]:
         """
         Store alert with idempotency checking.
         

@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 service_start_time = datetime.now()
 
 # Initialize alert storage at module level (works for both tests and production)
-alert_storage = AlertStorage(db_path="alerts.db")
+# Use environment variable for db path to allow test isolation
+db_path = os.getenv("ALERTS_DB_PATH", "alerts.db")
+alert_storage = AlertStorage(db_path=db_path)
 execution_worker = None
 worker_task = None
 
@@ -389,8 +391,15 @@ async def root():
             
             function formatTimestamp(isoString) {
                 if (!isoString) return '-';
-                const date = new Date(isoString);
-                return date.toLocaleString();
+                try {
+                    const date = new Date(isoString);
+                    const formatted = date.toLocaleString();
+                    // Return only time portion (after comma), or full string if no comma
+                    const parts = formatted.split(',');
+                    return parts.length > 1 ? parts[1].trim() : formatted;
+                } catch (e) {
+                    return isoString;
+                }
             }
             
             function formatUptime(seconds) {
@@ -460,7 +469,7 @@ async def root():
                                     ${data.alerts.map(alert => `
                                         <tr>
                                             <td class="mono">${alert.id}</td>
-                                            <td>${formatTimestamp(alert.received_at).split(',')[1]}</td>
+                                            <td>${formatTimestamp(alert.received_at)}</td>
                                             <td><strong>${alert.symbol}</strong></td>
                                             <td class="side-${alert.side.toLowerCase()}">${alert.side.toUpperCase()}</td>
                                             <td class="${getConfidenceClass(alert.confidence)}">

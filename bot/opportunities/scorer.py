@@ -3,7 +3,7 @@ Opportunity scorer - scores and ranks potential trading opportunities.
 """
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ class OpportunityScorer:
             sentiment_score=sent_score,
             liquidity_score=liq_score,
             rationale=rationale,
-            last_updated=datetime.utcnow().isoformat() + 'Z'
+            last_updated=datetime.now(timezone.utc).isoformat()
         )
     
     def score_multiple(

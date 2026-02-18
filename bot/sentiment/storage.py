@@ -3,7 +3,7 @@ Sentiment storage - SQLite storage for sentiment records.
 """
 import sqlite3
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import logging
 import json
@@ -138,7 +138,7 @@ class SentimentStorage:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        cutoff_time = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         
         cursor.execute('''
             SELECT asset, score, confidence, sample_size, trend, metadata, created_at
@@ -199,7 +199,7 @@ class SentimentStorage:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cutoff_time = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff_time = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         
         cursor.execute('''
             DELETE FROM sentiment_records

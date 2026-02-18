@@ -5,7 +5,7 @@ import logging
 import json
 import re
 from typing import Any, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from contextvars import ContextVar
 
@@ -71,7 +71,7 @@ class JSONFormatter(logging.Formatter):
             JSON-formatted log string
         """
         log_data: Dict[str, Any] = {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'level': record.levelname,
             'logger': record.name,
             'message': record.getMessage(),

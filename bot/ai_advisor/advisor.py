@@ -5,7 +5,7 @@ CRITICAL: This module MUST NOT have any order placement capability.
 All outputs are advisory only and require deterministic strategy confirmation.
 """
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 import logging
 import json
@@ -172,7 +172,7 @@ class AIAdvisor:
             risks=risks,
             suggested_action=suggested_action,
             disclaimer=self.DISCLAIMER,
-            generated_at=datetime.utcnow().isoformat() + 'Z',
+            generated_at=datetime.now(timezone.utc).isoformat(),
             technical_score=technical_score,
             regime_alignment=regime_score,
             sentiment_score=sentiment_score

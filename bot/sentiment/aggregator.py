@@ -2,7 +2,7 @@
 Sentiment aggregator - combines and processes sentiment data from multiple sources.
 """
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import statistics
 
@@ -39,7 +39,7 @@ class AggregatedSentiment:
         self.confidence = confidence
         self.sample_size = sample_size
         self.trend = trend
-        self.updated_at = updated_at or datetime.utcnow()
+        self.updated_at = updated_at or datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -192,5 +192,5 @@ class SentimentAggregator:
             'bearish_count': trends.count('bearish'),
             'neutral_count': trends.count('neutral'),
             'asset_count': len(sentiments),
-            'updated_at': datetime.utcnow().isoformat()
+            'updated_at': datetime.now(timezone.utc).isoformat()
         }

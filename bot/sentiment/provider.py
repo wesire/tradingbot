@@ -3,7 +3,7 @@ Sentiment provider base class and mock implementation.
 """
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import random
 
@@ -38,7 +38,7 @@ class SentimentData:
         self.confidence = max(0.0, min(1.0, confidence))  # Clamp to [0, 1]
         self.headline = headline
         self.source = source
-        self.timestamp = timestamp or datetime.utcnow()
+        self.timestamp = timestamp or datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -157,7 +157,7 @@ class MockSentimentProvider(SentimentProvider):
                 confidence=confidence,
                 headline=random.choice(headlines),
                 source="mock_provider",
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             sentiments.append(sentiment)
         

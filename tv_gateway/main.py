@@ -1,6 +1,7 @@
 """
 FastAPI webhook gateway for TradingView alerts.
 """
+from typing import Optional
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,6 +16,10 @@ import logging
 from tv_gateway.schemas import WebhookPayload, WebhookResponse, HealthResponse
 from tv_gateway.auth import WebhookAuth
 from bot.config.default_config import config
+from bot.sentiment import MockSentimentProvider, SentimentAggregator, SentimentStorage
+from bot.ai_advisor import AIAdvisor
+from bot.opportunities import OpportunityScorer
+from bot.strategy import registry
 
 # Setup logging
 logging.basicConfig(
@@ -157,6 +162,17 @@ webhook_auth = WebhookAuth(
     max_age_seconds=config.TV_MAX_ALERT_AGE_SECONDS
 )
 
+# Initialize sentiment components
+sentiment_provider = MockSentimentProvider(base_sentiment=0.1)
+sentiment_aggregator = SentimentAggregator([sentiment_provider])
+sentiment_storage = SentimentStorage()
+
+# Initialize AI advisor (advisory only)
+ai_advisor = AIAdvisor()
+
+# Initialize opportunity scorer
+opportunity_scorer = OpportunityScorer()
+
 
 @app.get("/", response_model=HealthResponse)
 async def root():
@@ -269,6 +285,244 @@ async def receive_webhook(payload: WebhookPayload, request: Request):
         message="Alert received and logged successfully",
         action_taken="logged_for_review"
     )
+
+
+@app.get("/api/sentiment/summary")
+async def get_sentiment_summary():
+    """
+    Get sentiment summary for all tracked assets.
+    
+    Returns:
+        Dictionary with sentiment data for all assets
+    """
+    try:
+        # Get enabled pairs from registry
+        enabled_pairs = registry.list_enabled_pairs()
+        
+        # Aggregate sentiment for all pairs
+        sentiments = sentiment_aggregator.aggregate_multi_asset(enabled_pairs)
+        
+        # Get market overview
+        overview = sentiment_aggregator.get_market_overview(enabled_pairs)
+        
+        # Store sentiments
+        for asset, sentiment in sentiments.items():
+            sentiment_storage.store(sentiment)
+        
+        return {
+            "success": True,
+            "overview": overview,
+            "assets": {k: v.to_dict() for k, v in sentiments.items()}
+        }
+    except Exception as e:
+        logger.error(f"Error getting sentiment summary: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/api/sentiment/{asset}")
+async def get_sentiment_for_asset(asset: str, hours: int = 24):
+    """
+    Get sentiment details for a specific asset.
+    
+    Args:
+        asset: Asset symbol (e.g., BTC, ETH, SOL)
+        hours: Hours of history to retrieve
+        
+    Returns:
+        Sentiment data for the asset
+    """
+    try:
+        # Get current sentiment
+        current = sentiment_aggregator.aggregate_sentiment(asset, lookback_hours=hours)
+        
+        # Get historical sentiment
+        history = sentiment_storage.get_history(asset, hours=hours)
+        
+        if current:
+            # Store current sentiment
+            sentiment_storage.store(current)
+            
+            return {
+                "success": True,
+                "asset": asset,
+                "current": current.to_dict(),
+                "history": history
+            }
+        else:
+            return {
+                "success": True,
+                "asset": asset,
+                "current": None,
+                "history": history,
+                "message": "No current sentiment data available"
+            }
+    except Exception as e:
+        logger.error(f"Error getting sentiment for {asset}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/api/advisor/{pair}")
+async def get_advisor_for_pair(pair: str, timeframe: str = "5m"):
+    """
+    Get AI advisor guidance for a specific pair.
+    
+    ADVISORY ONLY: This endpoint provides guidance but NEVER places orders.
+    
+    Args:
+        pair: Trading pair (e.g., BTC/USDT:USDT)
+        timeframe: Timeframe for analysis
+        
+    Returns:
+        AI advisory output
+    """
+    try:
+        # Verify advisory-only mode
+        ai_advisor.verify_advisory_only()
+        
+        # Extract base asset
+        base_asset = pair.split('/')[0] if '/' in pair else pair
+        
+        # Mock OHLCV and technical data (in production, fetch from exchange/strategy)
+        ohlcv_snapshot = {
+            "close": 45000.0,
+            "volume": 1000000.0
+        }
+        
+        technical_signals = {
+            "rsi": 42.0,
+            "price_vs_ema": True,
+            "volume_above_avg": True,
+            "filters_passed": True,
+            "atr_status": "normal",
+            "atr": 200.0
+        }
+        
+        regime_data = {
+            "bullish": True,
+            "bearish": False,
+            "neutral": False,
+            "adx": 28.0
+        }
+        
+        # Get sentiment
+        sentiment = sentiment_aggregator.aggregate_sentiment(base_asset)
+        sentiment_data = sentiment.to_dict() if sentiment else None
+        
+        # Generate advisory
+        advisory = ai_advisor.generate_advisory(
+            pair=pair,
+            timeframe=timeframe,
+            ohlcv_snapshot=ohlcv_snapshot,
+            technical_signals=technical_signals,
+            regime_data=regime_data,
+            sentiment_data=sentiment_data
+        )
+        
+        return {
+            "success": True,
+            "advisory": advisory.to_dict(),
+            "warning": "ADVISORY ONLY - No orders will be placed based on this guidance"
+        }
+    except Exception as e:
+        logger.error(f"Error generating advisor for {pair}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/api/opportunities")
+async def get_opportunities(
+    min_confidence: float = 0.3,
+    max_results: int = 10,
+    side: Optional[str] = None,
+    timeframe: str = "5m"
+):
+    """
+    Get ranked list of trading opportunities.
+    
+    Args:
+        min_confidence: Minimum confidence threshold (0-1)
+        max_results: Maximum number of results to return
+        side: Optional filter for "long" or "short"
+        timeframe: Timeframe for analysis
+        
+    Returns:
+        List of trading opportunities
+    """
+    try:
+        # Get enabled pairs from registry
+        enabled_pairs = registry.list_enabled_pairs()
+        
+        # Build pairs data (mock data for now)
+        pairs_data = {}
+        
+        for pair in enabled_pairs:
+            base_asset = pair.split('/')[0]
+            
+            # Mock technical and regime data
+            pairs_data[pair] = {
+                'timeframe': timeframe,
+                'technical': {
+                    'rsi': 45.0,
+                    'price_vs_ema': True,
+                    'volume_above_avg': True,
+                    'filters_passed': True,
+                    'close': 45000.0,
+                    'atr': 200.0
+                },
+                'regime': {
+                    'bullish': True,
+                    'bearish': False,
+                    'adx': 28.0
+                },
+                'sentiment': None,
+                'liquidity': {
+                    'atr_status': 'normal',
+                    'volume_consistent': True
+                }
+            }
+            
+            # Get sentiment if available
+            sentiment = sentiment_aggregator.aggregate_sentiment(base_asset)
+            if sentiment:
+                pairs_data[pair]['sentiment'] = sentiment.to_dict()
+        
+        # Score opportunities
+        opportunities = opportunity_scorer.score_multiple(pairs_data)
+        
+        # Filter by confidence
+        opportunities = [o for o in opportunities if o.confidence >= min_confidence]
+        
+        # Filter by side if specified
+        if side:
+            opportunities = [o for o in opportunities if o.side == side.lower()]
+        
+        # Limit results
+        opportunities = opportunities[:max_results]
+        
+        return {
+            "success": True,
+            "count": len(opportunities),
+            "opportunities": [o.to_dict() for o in opportunities],
+            "filters": {
+                "min_confidence": min_confidence,
+                "side": side,
+                "timeframe": timeframe
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting opportunities: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
 
 
 @app.exception_handler(Exception)

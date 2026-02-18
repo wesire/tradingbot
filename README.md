@@ -99,6 +99,12 @@ make backtest
 make up
 ```
 
+7. **Access the Dashboard**
+```bash
+# Dashboard will be available at http://localhost:3000
+# Default port can be changed via DASHBOARD_PORT in .env
+```
+
 ### Quick Test
 
 ```bash
@@ -217,6 +223,48 @@ Tests cover:
 - ✅ Backtest pipeline and champion selection
 
 Coverage report: `htmlcov/index.html`
+
+## 🎛️ Dashboard
+
+The trading bot includes a modern React dashboard for real-time monitoring and control.
+
+### Features
+
+- **Real-time Dashboard**: Monitor bot status, positions, trades, and P&L
+- **Operator Controls**: Toggle trading modes, pause/resume operations, emergency stop
+- **AI Advisor**: View AI-powered market analysis and trading recommendations
+- **Opportunities**: Browse and filter potential trading setups identified by the AI
+- **Dark Theme**: Professional dark mode optimized for trading
+- **Responsive Design**: Works on desktop, tablet, and mobile devices
+
+### Access
+
+Once services are running:
+```bash
+# Dashboard available at:
+http://localhost:3000
+
+# API endpoint (webhook service):
+http://localhost:8000
+```
+
+### Safety Features
+
+- **Confirmation Dialogs**: Critical actions require explicit confirmation
+- **Warning Alerts**: Clear warnings for risky operations
+- **Mode Indicators**: Always shows current trading mode (dry-run/live)
+- **AI Disclaimer**: Recommendations clearly marked as advisory only
+
+### Development
+
+For dashboard development:
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+See `dashboard/README.md` for detailed documentation.
 
 ## 📊 Backtesting Workflow
 

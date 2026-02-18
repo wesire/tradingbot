@@ -1,0 +1,42 @@
+# Global Risk Management Parameters
+
+position_sizing:
+  max_risk_per_trade: 0.005  # 0.5% of capital per trade
+  max_risk_per_pair: 0.01    # 1% of capital per pair
+  default_position_size_pct: 0.02  # 2% of capital per position
+  
+stoploss:
+  profiles:
+    conservative:
+      initial_stop_atr_multiplier: 2.5
+      breakeven_trigger_atr: 2.0
+      partial_tp_sizes: [0.33, 0.33, 0.34]
+      partial_tp_distances: [1.5, 2.5, 4.0]  # In ATR multiples
+      
+    standard:
+      initial_stop_atr_multiplier: 2.0
+      breakeven_trigger_atr: 1.5
+      partial_tp_sizes: [0.4, 0.3, 0.3]
+      partial_tp_distances: [1.5, 2.5, 4.0]
+      
+    aggressive:
+      initial_stop_atr_multiplier: 1.5
+      breakeven_trigger_atr: 1.0
+      partial_tp_sizes: [0.5, 0.3, 0.2]
+      partial_tp_distances: [1.0, 2.0, 3.5]
+
+daily_limits:
+  max_daily_drawdown: 0.025  # 2.5% daily drawdown limit
+  max_consecutive_losses: 3
+  cooldown_after_losses_minutes: 30
+  reset_time_utc: "00:00"  # When to reset daily counters
+
+circuit_breakers:
+  volatility_spike_threshold: 3.0  # If ATR > 3x normal, pause trading
+  spread_threshold_bps: 50  # If spread > 50 bps, skip trade
+  volume_drop_threshold: 0.3  # If volume < 30% of average, skip trade
+  
+per_pair_cooldowns:
+  enabled: true
+  min_time_between_trades_seconds: 300  # 5 minutes
+  cooldown_after_loss_seconds: 600  # 10 minutes after a loss

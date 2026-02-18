@@ -1,0 +1,47 @@
+# SOL Momentum Strategy Configuration
+
+strategy:
+  name: "sol_momentum"
+  description: "SOL/USDT momentum strategy with stricter RSI/volume filters"
+  class_name: "SOLMomentumStrategy"
+  
+timeframes:
+  primary: "5m"
+  regime_htf: "15m"
+  
+regime_filter:
+  ema_fast: 50
+  ema_slow: 200
+  adx_threshold: 28  # Higher threshold - only trade strong trends
+  adx_period: 14
+  require_trending_regime: true
+  require_strong_momentum: true
+  
+entry_signals:
+  ema_period: 21
+  rsi_period: 14
+  rsi_long_threshold: 45  # More conservative entries
+  rsi_short_threshold: 55
+  require_price_rejection: true
+  momentum_confirmation: true
+  macd_confirmation: true  # Additional MACD filter for momentum
+  
+filters:
+  atr_period: 14
+  atr_min_threshold: 0.002  # SOL can be very volatile
+  atr_max_threshold: 0.015  # Avoid extreme volatility
+  volume_period: 20
+  volume_multiplier: 1.5  # Require strong volume for momentum
+  
+risk_parameters:
+  stop_loss_atr_multiplier: 1.8  # Tighter stops for momentum plays
+  take_profit_r_multiples: [1.5, 2.5, 4.5]  # Larger R:R for momentum
+  breakeven_at_atr: 1.2
+  trailing_stop_enabled: true  # Enable trailing for momentum
+  trailing_stop_distance_atr: 1.5
+  
+# TODO: calibrate via hyperopt/backtest
+optimization_targets:
+  primary_metric: "profit_factor"
+  min_trades: 80
+  max_drawdown_tolerance: 0.18

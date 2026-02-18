@@ -1,0 +1,42 @@
+# BTC Scalping Strategy Configuration
+
+strategy:
+  name: "btc_scalp"
+  description: "BTC/USDT scalping with regime filtering and dynamic entries"
+  class_name: "BTCScalpStrategy"
+  
+timeframes:
+  primary: "5m"
+  regime_htf: "15m"
+  
+regime_filter:
+  ema_fast: 50
+  ema_slow: 200
+  adx_threshold: 25
+  adx_period: 14
+  require_trending_regime: true
+  
+entry_signals:
+  ema_period: 21
+  rsi_period: 14
+  rsi_long_threshold: 40  # Enter long when RSI < 40 (oversold bounce)
+  rsi_short_threshold: 60  # Enter short when RSI > 60 (overbought fade)
+  require_price_rejection: true
+  
+filters:
+  atr_period: 14
+  atr_min_threshold: 0.0005  # Minimum volatility to trade
+  volume_period: 20
+  volume_multiplier: 1.2  # Require 1.2x average volume for entry
+  
+risk_parameters:
+  stop_loss_atr_multiplier: 2.0
+  take_profit_r_multiples: [1.5, 2.5, 4.0]
+  breakeven_at_atr: 1.5
+  trailing_stop_enabled: false
+  
+# TODO: calibrate via hyperopt/backtest
+optimization_targets:
+  primary_metric: "sharpe_ratio"
+  min_trades: 100
+  max_drawdown_tolerance: 0.15

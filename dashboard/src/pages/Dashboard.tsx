@@ -163,16 +163,16 @@ export function Dashboard() {
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
-          <TabsTrigger value="overview" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')}>
+          <TabsTrigger value="overview" active={activeTab === 'overview'}>
             Overview
           </TabsTrigger>
-          <TabsTrigger value="positions" active={activeTab === 'positions'} onClick={() => setActiveTab('positions')}>
+          <TabsTrigger value="positions" active={activeTab === 'positions'}>
             Positions
           </TabsTrigger>
-          <TabsTrigger value="trades" active={activeTab === 'trades'} onClick={() => setActiveTab('trades')}>
+          <TabsTrigger value="trades" active={activeTab === 'trades'}>
             Trade History
           </TabsTrigger>
-          <TabsTrigger value="webhooks" active={activeTab === 'webhooks'} onClick={() => setActiveTab('webhooks')}>
+          <TabsTrigger value="webhooks" active={activeTab === 'webhooks'}>
             Webhook Events
           </TabsTrigger>
         </TabsList>

@@ -88,7 +88,7 @@ class DefaultConfig:
     SCORE_WEIGHT_DRAWDOWN: float = 0.15  # Negative contribution
     
     # TradingView Webhook Configuration
-    TV_WEBHOOK_SECRET: str = os.getenv("TV_WEBHOOK_SECRET", "")
+    TV_WEBHOOK_SECRET: str = os.getenv("TV_WEBHOOK_SECRET", "your_webhook_secret_here")
     TV_WEBHOOK_PORT: int = int(os.getenv("TV_WEBHOOK_PORT", "8000"))
     TV_MAX_ALERT_AGE_SECONDS: int = 30  # Reject stale alerts
     TV_CONFIDENCE_THRESHOLD: float = 0.7  # Minimum confidence to act

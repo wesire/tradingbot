@@ -119,11 +119,22 @@ class ExecutionWorker:
             # Empty list means all symbols allowed
             return True, None
         
-        # Normalize symbol for comparison
+        # Normalize symbol for comparison (remove all separators)
         normalized_symbol = alert.symbol.upper().replace('/', '').replace(':', '')
         
         for allowed in self.allowed_symbols:
+            # Normalize allowed symbol
             normalized_allowed = allowed.upper().replace('/', '').replace(':', '')
+            
+            # Also try matching just the base part (before first separator)
+            # E.g., "BTC/USDT:USDT" -> "BTC" matches "BTCUSDT" base "BTC"
+            if ':' in allowed:
+                # Format is like "BTC/USDT:USDT" - split on colon and take first part
+                base_part = allowed.split(':')[0].upper().replace('/', '')
+                if normalized_symbol.startswith(base_part) or normalized_symbol == base_part:
+                    return True, None
+            
+            # Direct match after normalization
             if normalized_symbol == normalized_allowed:
                 return True, None
         

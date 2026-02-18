@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Service state
 service_start_time = datetime.now()
-alert_storage = None
+
+# Initialize alert storage at module level (works for both tests and production)
+alert_storage = AlertStorage(db_path="alerts.db")
 execution_worker = None
 worker_task = None
 
@@ -42,13 +44,12 @@ worker_task = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application."""
-    global alert_storage, execution_worker, worker_task
+    global execution_worker, worker_task
     
     # Startup
     logger.info("Starting TradingView webhook gateway (Phase 2)...")
     
-    # Initialize alert storage (migrates old database if needed)
-    alert_storage = AlertStorage(db_path="alerts.db")
+    # Alert storage is already initialized at module level
     
     # Initialize execution worker
     execution_worker = create_execution_worker(alert_storage)

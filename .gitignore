@@ -85,3 +85,9 @@ docker-compose.override.yml
 
 # Runtime artifacts
 artifacts/*.jsonl
+
+# Dashboard build artifacts
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+dashboard/build/

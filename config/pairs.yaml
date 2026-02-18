@@ -1,0 +1,37 @@
+# Trading Pairs Configuration
+# List of enabled pairs with per-pair settings
+
+pairs:
+  - symbol: "BTC/USDT:USDT"
+    enabled: true
+    timeframe: "5m"
+    leverage_cap: 10
+    stake_allocation: 0.4  # 40% of total capital
+    stoploss_profile: "standard"
+    allowed_session_hours:  # Optional: limit trading to specific hours (UTC)
+      - start: "00:00"
+        end: "23:59"
+    strategy: "btc_scalp"
+    
+  - symbol: "ETH/USDT:USDT"
+    enabled: true
+    timeframe: "5m"
+    leverage_cap: 10
+    stake_allocation: 0.3  # 30% of total capital
+    stoploss_profile: "standard"
+    strategy: "eth_scalp"
+    
+  - symbol: "SOL/USDT:USDT"
+    enabled: false  # Disabled by default - enable after backtesting
+    timeframe: "5m"
+    leverage_cap: 8
+    stake_allocation: 0.3  # 30% of total capital
+    stoploss_profile: "aggressive"
+    strategy: "sol_momentum"
+
+# Global pair settings
+global:
+  max_open_trades: 3
+  default_timeframe: "5m"
+  default_leverage_cap: 10
+  validate_pairs_on_startup: true

@@ -49,6 +49,9 @@ logs-bot: ## Show bot logs only
 logs-webhook: ## Show webhook logs only
 	docker-compose logs -f webhook
 
+logs-dashboard: ## Show dashboard logs only
+	docker-compose logs -f dashboard
+
 # Data and backtesting commands
 download-data: ## Download historical data
 	@echo "$(BLUE)Downloading historical data...$(NC)"
@@ -58,9 +61,13 @@ download-data: ## Download historical data
 		--timeframes $(shell echo $(TIMEFRAMES) | tr ',' ' ')
 	@echo "$(GREEN)✓ Data download complete$(NC)"
 
-backtest: ## Run backtest matrix across timeframes
+backtest: ## Run backtest matrix across timeframes (usage: make backtest PAIR="BTC/USDT:USDT")
 	@echo "$(BLUE)Running backtest matrix...$(NC)"
-	python scripts/run_backtest_matrix.py
+	@if [ -z "$(PAIR)" ]; then \
+		python scripts/run_backtest_matrix.py; \
+	else \
+		python scripts/run_backtest_matrix.py --pair "$(PAIR)"; \
+	fi
 	@echo "$(GREEN)✓ Backtest complete$(NC)"
 	@echo "Results saved to artifacts/metrics.csv"
 
@@ -144,6 +151,14 @@ health: ## Check health of services
 	@echo "Webhook Gateway:"
 	@curl -s http://localhost:${TV_WEBHOOK_PORT}/health | python -m json.tool || echo "$(RED)✗ Not responding$(NC)"
 	@echo ""
+	@echo "Dashboard:"
+	@curl -s -o /dev/null -w "%{http_code}" http://localhost:${DASHBOARD_PORT} > /dev/null && echo "$(GREEN)✓ Responding$(NC)" || echo "$(RED)✗ Not responding$(NC)"
+	@echo ""
+
+smoke: ## Run smoke tests (check docker compose health + key endpoints)
+	@echo "$(BLUE)Running smoke tests...$(NC)"
+	@bash scripts/smoke_test.sh || (echo "$(RED)✗ Smoke tests failed$(NC)" && exit 1)
+	@echo "$(GREEN)✓ All smoke tests passed$(NC)"
 
 shell-bot: ## Open shell in bot container
 	docker-compose exec bot /bin/bash

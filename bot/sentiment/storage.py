@@ -43,9 +43,14 @@ class SentimentStorage:
                 sample_size INTEGER NOT NULL,
                 trend TEXT NOT NULL,
                 metadata TEXT,
-                created_at TEXT NOT NULL,
-                INDEX idx_asset_created (asset, created_at)
+                created_at TEXT NOT NULL
             )
+        ''')
+        
+        # Create index separately
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_asset_created 
+            ON sentiment_records(asset, created_at)
         ''')
         
         conn.commit()

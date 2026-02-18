@@ -1,10 +1,11 @@
 """
 FastAPI webhook gateway for TradingView alerts.
+Phase 2: Full alert execution pipeline with lifecycle management.
 """
 from typing import Optional
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from contextlib import asynccontextmanager
 import os
 from datetime import datetime
@@ -12,9 +13,12 @@ import json
 import sqlite3
 from pathlib import Path
 import logging
+import asyncio
 
 from tv_gateway.schemas import WebhookPayload, WebhookResponse, HealthResponse
 from tv_gateway.auth import WebhookAuth
+from tv_gateway.alert_storage import AlertStorage, Alert, AlertStatus
+from tv_gateway.execution_worker import create_execution_worker
 from bot.config.default_config import config
 from bot.sentiment import MockSentimentProvider, SentimentAggregator, SentimentStorage
 from bot.ai_advisor import AIAdvisor
@@ -31,112 +35,48 @@ logger = logging.getLogger(__name__)
 # Service state
 service_start_time = datetime.now()
 
-
-def init_database():
-    """Initialize SQLite database for alert logging."""
-    db_path = "alerts.db"
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            source_ip TEXT,
-            symbol TEXT NOT NULL,
-            timeframe TEXT NOT NULL,
-            side TEXT NOT NULL,
-            confidence REAL,
-            price REAL,
-            setup_id TEXT,
-            validation_result TEXT NOT NULL,
-            action_taken TEXT,
-            payload TEXT NOT NULL
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    logger.info(f"Database initialized: {db_path}")
-
-
-def log_alert(
-    payload: dict,
-    source_ip: str,
-    validation_result: str,
-    action_taken: str = "none"
-):
-    """
-    Log alert to database and JSON file.
-    
-    Args:
-        payload: Alert payload dictionary
-        source_ip: Source IP address
-        validation_result: Validation result (success/failure reason)
-        action_taken: Action taken by bot
-    """
-    # Log to database
-    try:
-        conn = sqlite3.connect("alerts.db")
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO alerts (
-                timestamp, source_ip, symbol, timeframe, side,
-                confidence, price, setup_id, validation_result,
-                action_taken, payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            datetime.now().isoformat(),
-            source_ip,
-            payload.get('symbol', ''),
-            payload.get('timeframe', ''),
-            payload.get('side', ''),
-            payload.get('confidence', 0.0),
-            payload.get('price', 0.0),
-            payload.get('setup_id', ''),
-            validation_result,
-            action_taken,
-            json.dumps(payload)
-        ))
-        
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Failed to log to database: {e}")
-    
-    # Log to JSON file
-    try:
-        log_dir = Path("artifacts")
-        log_dir.mkdir(exist_ok=True)
-        log_file = log_dir / "webhook_alerts.jsonl"
-        
-        log_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "source_ip": source_ip,
-            "validation_result": validation_result,
-            "action_taken": action_taken,
-            "payload": payload
-        }
-        
-        with open(log_file, 'a') as f:
-            f.write(json.dumps(log_entry) + '\n')
-    except Exception as e:
-        logger.error(f"Failed to log to file: {e}")
+# Initialize alert storage at module level (works for both tests and production)
+# Use environment variable for db path to allow test isolation
+db_path = os.getenv("ALERTS_DB_PATH", "alerts.db")
+alert_storage = AlertStorage(db_path=db_path)
+execution_worker = None
+worker_task = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application."""
+    global execution_worker, worker_task
+    
     # Startup
-    logger.info("Starting TradingView webhook gateway...")
-    init_database()
-    logger.info("Service started successfully")
+    logger.info("Starting TradingView webhook gateway (Phase 2)...")
+    
+    # Alert storage is already initialized at module level
+    
+    # Initialize execution worker
+    execution_worker = create_execution_worker(alert_storage)
+    
+    # Start worker in background
+    worker_task = asyncio.create_task(execution_worker.run())
+    
+    logger.info("Service started successfully with execution worker")
     
     yield
     
     # Shutdown
     logger.info("Shutting down webhook gateway...")
+    
+    if execution_worker:
+        execution_worker.stop()
+    
+    if worker_task:
+        try:
+            await asyncio.wait_for(worker_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Worker task did not stop gracefully")
+            worker_task.cancel()
+    
+    logger.info("Shutdown complete")
 
 
 # Initialize FastAPI app
@@ -174,13 +114,418 @@ ai_advisor = AIAdvisor()
 opportunity_scorer = OpportunityScorer()
 
 
-@app.get("/", response_model=HealthResponse)
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Root endpoint."""
-    return HealthResponse(
-        status="running",
-        version="1.0.0"
-    )
+    """Root endpoint - Operator Dashboard."""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>TradingView Alert Execution Dashboard</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                background: #0f172a;
+                color: #e2e8f0;
+                padding: 20px;
+            }
+            
+            .container {
+                max-width: 1400px;
+                margin: 0 auto;
+            }
+            
+            header {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 30px;
+                border-radius: 12px;
+                margin-bottom: 30px;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            }
+            
+            h1 {
+                font-size: 32px;
+                font-weight: 700;
+                margin-bottom: 8px;
+            }
+            
+            .subtitle {
+                font-size: 16px;
+                opacity: 0.9;
+            }
+            
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+                margin-bottom: 30px;
+            }
+            
+            .stat-card {
+                background: #1e293b;
+                padding: 24px;
+                border-radius: 12px;
+                border: 1px solid #334155;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            }
+            
+            .stat-label {
+                font-size: 14px;
+                color: #94a3b8;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 8px;
+            }
+            
+            .stat-value {
+                font-size: 36px;
+                font-weight: 700;
+                margin-bottom: 4px;
+            }
+            
+            .stat-subtext {
+                font-size: 13px;
+                color: #64748b;
+            }
+            
+            .alerts-section {
+                background: #1e293b;
+                padding: 24px;
+                border-radius: 12px;
+                border: 1px solid #334155;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            }
+            
+            .section-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 20px;
+            }
+            
+            h2 {
+                font-size: 24px;
+                font-weight: 600;
+            }
+            
+            .refresh-indicator {
+                font-size: 13px;
+                color: #64748b;
+            }
+            
+            .alerts-table {
+                width: 100%;
+                border-collapse: collapse;
+                overflow: hidden;
+            }
+            
+            .alerts-table thead {
+                background: #0f172a;
+            }
+            
+            .alerts-table th {
+                padding: 12px;
+                text-align: left;
+                font-size: 13px;
+                font-weight: 600;
+                color: #94a3b8;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .alerts-table td {
+                padding: 12px;
+                border-top: 1px solid #334155;
+                font-size: 14px;
+            }
+            
+            .alerts-table tbody tr:hover {
+                background: #0f172a;
+            }
+            
+            .status-chip {
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .status-accepted {
+                background: #3b82f6;
+                color: #dbeafe;
+            }
+            
+            .status-queued {
+                background: #f59e0b;
+                color: #fef3c7;
+            }
+            
+            .status-executed {
+                background: #10b981;
+                color: #d1fae5;
+            }
+            
+            .status-failed {
+                background: #ef4444;
+                color: #fee2e2;
+            }
+            
+            .status-ignored {
+                background: #6b7280;
+                color: #e5e7eb;
+            }
+            
+            .side-long {
+                color: #10b981;
+                font-weight: 600;
+            }
+            
+            .side-short {
+                color: #ef4444;
+                font-weight: 600;
+            }
+            
+            .confidence-high {
+                color: #10b981;
+            }
+            
+            .confidence-medium {
+                color: #f59e0b;
+            }
+            
+            .confidence-low {
+                color: #ef4444;
+            }
+            
+            .loading {
+                text-align: center;
+                padding: 40px;
+                color: #64748b;
+            }
+            
+            .error {
+                background: #7f1d1d;
+                border: 1px solid #991b1b;
+                color: #fecaca;
+                padding: 16px;
+                border-radius: 8px;
+                margin: 20px 0;
+            }
+            
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.5; }
+            }
+            
+            .pulsing {
+                animation: pulse 2s ease-in-out infinite;
+            }
+            
+            .mono {
+                font-family: 'Courier New', monospace;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>🚀 TradingView Alert Execution Dashboard</h1>
+                <p class="subtitle">Phase 2: Real-time alert monitoring and execution pipeline</p>
+            </header>
+            
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Service Status</div>
+                    <div class="stat-value pulsing" id="service-status">●</div>
+                    <div class="stat-subtext" id="uptime">Loading...</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-label">Total Alerts</div>
+                    <div class="stat-value" id="total-alerts">-</div>
+                    <div class="stat-subtext" id="recent-count">Last hour: -</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-label">Executed</div>
+                    <div class="stat-value" style="color: #10b981;" id="executed-count">-</div>
+                    <div class="stat-subtext">Successfully processed</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-label">Failed</div>
+                    <div class="stat-value" style="color: #ef4444;" id="failed-count">-</div>
+                    <div class="stat-subtext">Rejected or errored</div>
+                </div>
+            </div>
+            
+            <div class="alerts-section">
+                <div class="section-header">
+                    <h2>Latest Alerts</h2>
+                    <div class="refresh-indicator">
+                        Auto-refresh: <span id="refresh-timer">10s</span>
+                    </div>
+                </div>
+                
+                <div id="alerts-container">
+                    <div class="loading">Loading alerts...</div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            let refreshCounter = 10;
+            let refreshInterval;
+            let countdownInterval;
+            
+            function formatTimestamp(isoString) {
+                if (!isoString) return '-';
+                try {
+                    const date = new Date(isoString);
+                    const formatted = date.toLocaleString();
+                    // Return only time portion (after comma), or full string if no comma
+                    const parts = formatted.split(',');
+                    return parts.length > 1 ? parts[1].trim() : formatted;
+                } catch (e) {
+                    return isoString;
+                }
+            }
+            
+            function formatUptime(seconds) {
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                return `Uptime: ${hours}h ${minutes}m`;
+            }
+            
+            function getConfidenceClass(confidence) {
+                if (confidence >= 0.8) return 'confidence-high';
+                if (confidence >= 0.5) return 'confidence-medium';
+                return 'confidence-low';
+            }
+            
+            async function fetchStats() {
+                try {
+                    const response = await fetch('/stats');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        // Service status
+                        document.getElementById('service-status').textContent = 
+                            data.service.status === 'running' ? '● RUNNING' : '○ STOPPED';
+                        document.getElementById('service-status').style.color = 
+                            data.service.status === 'running' ? '#10b981' : '#ef4444';
+                        
+                        // Uptime
+                        document.getElementById('uptime').textContent = 
+                            formatUptime(data.service.uptime_seconds);
+                        
+                        // Alert counts
+                        document.getElementById('total-alerts').textContent = 
+                            data.alerts.total_alerts || 0;
+                        document.getElementById('recent-count').textContent = 
+                            `Last hour: ${data.alerts.recent_count_1h || 0}`;
+                        document.getElementById('executed-count').textContent = 
+                            data.alerts.by_status?.executed || 0;
+                        document.getElementById('failed-count').textContent = 
+                            data.alerts.by_status?.failed || 0;
+                    }
+                } catch (error) {
+                    console.error('Error fetching stats:', error);
+                }
+            }
+            
+            async function fetchAlerts() {
+                try {
+                    const response = await fetch('/alerts?limit=20');
+                    const data = await response.json();
+                    
+                    if (data.success && data.alerts.length > 0) {
+                        const table = `
+                            <table class="alerts-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Time</th>
+                                        <th>Symbol</th>
+                                        <th>Side</th>
+                                        <th>Confidence</th>
+                                        <th>Price</th>
+                                        <th>Status</th>
+                                        <th>Setup</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${data.alerts.map(alert => `
+                                        <tr>
+                                            <td class="mono">${alert.id}</td>
+                                            <td>${formatTimestamp(alert.received_at)}</td>
+                                            <td><strong>${alert.symbol}</strong></td>
+                                            <td class="side-${alert.side.toLowerCase()}">${alert.side.toUpperCase()}</td>
+                                            <td class="${getConfidenceClass(alert.confidence)}">
+                                                ${(alert.confidence * 100).toFixed(0)}%
+                                            </td>
+                                            <td class="mono">$${alert.price.toFixed(2)}</td>
+                                            <td>
+                                                <span class="status-chip status-${alert.status}">
+                                                    ${alert.status}
+                                                </span>
+                                            </td>
+                                            <td class="mono">${alert.setup_id || '-'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        `;
+                        document.getElementById('alerts-container').innerHTML = table;
+                    } else if (data.success && data.alerts.length === 0) {
+                        document.getElementById('alerts-container').innerHTML = 
+                            '<div class="loading">No alerts yet. Send a test alert to see it here.</div>';
+                    }
+                } catch (error) {
+                    console.error('Error fetching alerts:', error);
+                    document.getElementById('alerts-container').innerHTML = 
+                        '<div class="error">Failed to load alerts. Please refresh the page.</div>';
+                }
+            }
+            
+            function updateRefreshTimer() {
+                document.getElementById('refresh-timer').textContent = `${refreshCounter}s`;
+                refreshCounter--;
+                
+                if (refreshCounter < 0) {
+                    refreshCounter = 10;
+                    fetchStats();
+                    fetchAlerts();
+                }
+            }
+            
+            // Initial load
+            fetchStats();
+            fetchAlerts();
+            
+            // Set up refresh intervals
+            refreshInterval = setInterval(() => {
+                fetchStats();
+                fetchAlerts();
+            }, 10000);
+            
+            countdownInterval = setInterval(updateRefreshTimer, 1000);
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -199,6 +544,7 @@ async def health_check():
 async def receive_webhook(payload: WebhookPayload, request: Request):
     """
     Receive and process TradingView webhook alerts.
+    Phase 2: Stores alerts with idempotency and queues for execution.
     
     Args:
         payload: Validated webhook payload
@@ -221,69 +567,80 @@ async def receive_webhook(payload: WebhookPayload, request: Request):
     
     if not is_valid:
         logger.warning(f"Validation failed from {client_ip}: {validation_msg}")
-        log_alert(
-            payload=payload.model_dump(),
-            source_ip=client_ip,
+        
+        # Store rejected alert
+        alert = Alert(
+            received_at=datetime.now().isoformat(),
+            symbol=payload.symbol,
+            timeframe=payload.timeframe,
+            side=payload.side,
+            setup_id=payload.setup_id,
+            confidence=payload.confidence,
+            price=payload.price,
+            event_time=payload.event_time,
+            nonce=payload.nonce,
+            payload_json=json.dumps(payload.model_dump()),
             validation_result=f"FAILED: {validation_msg}",
-            action_taken="rejected"
+            status=AlertStatus.FAILED,
+            fail_reason=validation_msg
         )
+        
+        alert_storage.store_alert(alert)
+        
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=validation_msg
         )
     
-    # Check confidence threshold
-    if payload.confidence < config.TV_CONFIDENCE_THRESHOLD:
-        logger.info(f"Alert confidence too low: {payload.confidence} < {config.TV_CONFIDENCE_THRESHOLD}")
-        log_alert(
-            payload=payload.model_dump(),
-            source_ip=client_ip,
-            validation_result="SUCCESS",
-            action_taken=f"ignored_low_confidence_{payload.confidence}"
-        )
-        return WebhookResponse(
-            success=True,
-            message=f"Alert received but confidence too low ({payload.confidence})",
-            action_taken="ignored_low_confidence"
-        )
-    
-    # Validate symbol matches our trading pair
-    expected_symbol = config.TRADING_PAIR.replace('/', '').replace(':', '')
-    received_symbol = payload.symbol.replace('/', '').replace(':', '')
-    
-    if expected_symbol.upper() != received_symbol.upper():
-        logger.info(f"Symbol mismatch: expected {expected_symbol}, got {received_symbol}")
-        log_alert(
-            payload=payload.model_dump(),
-            source_ip=client_ip,
-            validation_result="SUCCESS",
-            action_taken="ignored_symbol_mismatch"
-        )
-        return WebhookResponse(
-            success=True,
-            message=f"Symbol mismatch: {received_symbol} not tracked",
-            action_taken="ignored_symbol_mismatch"
-        )
-    
-    # Log successful alert
-    log_alert(
-        payload=payload.model_dump(),
-        source_ip=client_ip,
+    # Create alert object
+    alert = Alert(
+        received_at=datetime.now().isoformat(),
+        symbol=payload.symbol,
+        timeframe=payload.timeframe,
+        side=payload.side,
+        setup_id=payload.setup_id,
+        confidence=payload.confidence,
+        price=payload.price,
+        event_time=payload.event_time,
+        nonce=payload.nonce,
+        payload_json=json.dumps(payload.model_dump()),
         validation_result="SUCCESS",
-        action_taken="logged_for_review"
+        status=AlertStatus.ACCEPTED
     )
     
-    # In production, this would route to the bot's decision layer
-    # For now, we just log and acknowledge
+    # Store with idempotency check
+    is_new, alert_id, reason = alert_storage.store_alert(alert)
+    
+    if not is_new:
+        # Duplicate alert
+        logger.info(f"Duplicate alert ignored: id={alert_id}, nonce={payload.nonce}")
+        
+        # Update status to ignored
+        alert_storage.update_status(
+            alert_id=alert_id,
+            status=AlertStatus.IGNORED,
+            fail_reason="duplicate"
+        )
+        
+        return WebhookResponse(
+            success=True,
+            message="Duplicate alert ignored (idempotent)",
+            alert_id=str(alert_id),
+            action_taken="ignored_duplicate"
+        )
+    
+    # Log successful alert acceptance
     logger.info(
-        f"Alert accepted: {payload.symbol} {payload.side} "
+        f"Alert accepted: id={alert_id}, {payload.symbol} {payload.side} "
         f"confidence={payload.confidence} setup={payload.setup_id}"
     )
     
+    # Alert will be picked up by execution worker
     return WebhookResponse(
         success=True,
-        message="Alert received and logged successfully",
-        action_taken="logged_for_review"
+        message="Alert received and queued for execution",
+        alert_id=str(alert_id),
+        action_taken="accepted"
     )
 
 
@@ -431,6 +788,196 @@ async def get_advisor_for_pair(pair: str, timeframe: str = "5m"):
         }
     except Exception as e:
         logger.error(f"Error generating advisor for {pair}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/api/opportunities")
+async def get_opportunities(
+    min_confidence: float = 0.3,
+    max_results: int = 10,
+    side: Optional[str] = None,
+    timeframe: str = "5m"
+):
+    """
+    Get ranked list of trading opportunities.
+    
+    Args:
+        min_confidence: Minimum confidence threshold (0-1)
+        max_results: Maximum number of results to return
+        side: Optional filter for "long" or "short"
+        timeframe: Timeframe for analysis
+        
+    Returns:
+        List of trading opportunities
+    """
+    try:
+        # Get enabled pairs from registry
+        enabled_pairs = registry.list_enabled_pairs()
+        
+        # Build pairs data (mock data for now)
+        pairs_data = {}
+        
+        for pair in enabled_pairs:
+            base_asset = pair.split('/')[0]
+            
+            # Mock technical and regime data
+            pairs_data[pair] = {
+                'timeframe': timeframe,
+                'technical': {
+                    'rsi': 45.0,
+                    'price_vs_ema': True,
+                    'volume_above_avg': True,
+                    'filters_passed': True,
+                    'close': 45000.0,
+                    'atr': 200.0
+                },
+                'regime': {
+                    'bullish': True,
+                    'bearish': False,
+                    'adx': 28.0
+                },
+                'sentiment': None,
+                'liquidity': {
+                    'atr_status': 'normal',
+                    'volume_consistent': True
+                }
+            }
+            
+            # Get sentiment if available
+            sentiment = sentiment_aggregator.aggregate_sentiment(base_asset)
+            if sentiment:
+                pairs_data[pair]['sentiment'] = sentiment.to_dict()
+        
+        # Score opportunities
+        opportunities = opportunity_scorer.score_multiple(pairs_data)
+        
+        # Filter by confidence
+        opportunities = [o for o in opportunities if o.confidence >= min_confidence]
+        
+        # Filter by side if specified
+        if side:
+            opportunities = [o for o in opportunities if o.side == side.lower()]
+        
+        # Limit results
+        opportunities = opportunities[:max_results]
+        
+        return {
+            "success": True,
+            "count": len(opportunities),
+            "opportunities": [o.to_dict() for o in opportunities],
+            "filters": {
+                "min_confidence": min_confidence,
+                "side": side,
+                "timeframe": timeframe
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting opportunities: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/alerts")
+async def list_alerts(
+    limit: int = 50,
+    status: Optional[str] = None,
+    symbol: Optional[str] = None
+):
+    """
+    List alerts with optional filtering.
+    
+    Args:
+        limit: Maximum number of alerts to return (default 50)
+        status: Filter by status (accepted/queued/executed/failed/ignored)
+        symbol: Filter by symbol
+        
+    Returns:
+        List of alerts (newest first)
+    """
+    try:
+        alerts = alert_storage.list_alerts(limit=limit, status=status, symbol=symbol)
+        
+        return {
+            "success": True,
+            "count": len(alerts),
+            "alerts": [alert.to_dict() for alert in alerts],
+            "filters": {
+                "limit": limit,
+                "status": status,
+                "symbol": symbol
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error listing alerts: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/alerts/{alert_id}")
+async def get_alert(alert_id: int):
+    """
+    Get details of a specific alert.
+    
+    Args:
+        alert_id: Alert database ID
+        
+    Returns:
+        Alert details
+    """
+    try:
+        alert = alert_storage.get_alert(alert_id)
+        
+        if not alert:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Alert {alert_id} not found"
+            )
+        
+        return {
+            "success": True,
+            "alert": alert.to_dict()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting alert {alert_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/stats")
+async def get_stats():
+    """
+    Get alert statistics and system status.
+    
+    Returns:
+        Statistics including counts by status and last processed time
+    """
+    try:
+        stats = alert_storage.get_stats()
+        
+        uptime = (datetime.now() - service_start_time).total_seconds()
+        
+        return {
+            "success": True,
+            "service": {
+                "status": "running",
+                "uptime_seconds": uptime,
+                "worker_enabled": execution_worker is not None
+            },
+            "alerts": stats
+        }
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "message": str(e)}

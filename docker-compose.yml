@@ -45,6 +45,17 @@ services:
       - TV_WEBHOOK_SECRET=${TV_WEBHOOK_SECRET}
       - TV_WEBHOOK_PORT=8000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Phase 2: Alert execution configuration
+      - ALERT_MAX_AGE_SECONDS=${ALERT_MAX_AGE_SECONDS:-600}
+      - MIN_CONFIDENCE=${MIN_CONFIDENCE:-0.9}
+      - ALLOWED_SYMBOLS=${ALLOWED_SYMBOLS:-BTC/USDT:USDT}
+      - ALLOWED_TIMEFRAMES=${ALLOWED_TIMEFRAMES:-5m}
+      - EXECUTION_ENABLED=${EXECUTION_ENABLED:-true}
+      # Bot integration
+      - BOT_TYPE=${BOT_TYPE:-freqtrade}
+      - FREQTRADE_API_URL=${FREQTRADE_API_URL:-http://bot:8080}
+      - FREQTRADE_API_USERNAME=${FREQTRADE_API_USERNAME}
+      - FREQTRADE_API_PASSWORD=${FREQTRADE_API_PASSWORD}
     command: >
       python -m uvicorn tv_gateway.main:app
       --host 0.0.0.0

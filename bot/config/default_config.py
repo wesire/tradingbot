@@ -88,7 +88,19 @@ class DefaultConfig:
     SCORE_WEIGHT_DRAWDOWN: float = 0.15  # Negative contribution
     
     # TradingView Webhook Configuration
-    TV_WEBHOOK_SECRET: str = os.getenv("TV_WEBHOOK_SECRET", "")
+    TV_WEBHOOK_SECRET: str = os.getenv("TV_WEBHOOK_SECRET", "your_webhook_secret_here")
+    
+    @classmethod
+    def validate_production_config(cls):
+        """Validate configuration for production use and issue warnings."""
+        if not cls.TV_WEBHOOK_SECRET or cls.TV_WEBHOOK_SECRET == "your_webhook_secret_here":
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "⚠️  TV_WEBHOOK_SECRET is using default/test value! "
+                "This is INSECURE for production. "
+                "Set TV_WEBHOOK_SECRET environment variable to a secure random string."
+            )
     TV_WEBHOOK_PORT: int = int(os.getenv("TV_WEBHOOK_PORT", "8000"))
     TV_MAX_ALERT_AGE_SECONDS: int = 30  # Reject stale alerts
     TV_CONFIDENCE_THRESHOLD: float = 0.7  # Minimum confidence to act
@@ -148,3 +160,7 @@ class DefaultConfig:
 
 # Create singleton instance
 config = DefaultConfig()
+
+# Validate configuration on startup (only in non-test environments)
+if hasattr(config, 'validate_production_config') and os.getenv("PYTEST_CURRENT_TEST") is None:
+    config.validate_production_config()

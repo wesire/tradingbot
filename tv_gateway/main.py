@@ -1,11 +1,11 @@
 """
 FastAPI webhook gateway for TradingView alerts.
-Phase 2: Full alert execution pipeline with lifecycle management.
+Phase 2.1: Production hardening with security, reliability, and safe operations.
 """
 from typing import Optional
-from fastapi import FastAPI, Request, HTTPException, status
+from fastapi import FastAPI, Request, HTTPException, status, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from contextlib import asynccontextmanager
 import os
 from datetime import datetime
@@ -19,6 +19,12 @@ from tv_gateway.schemas import WebhookPayload, WebhookResponse, HealthResponse
 from tv_gateway.auth import WebhookAuth
 from tv_gateway.alert_storage import AlertStorage, Alert, AlertStatus
 from tv_gateway.execution_worker import create_execution_worker
+from tv_gateway.hmac_auth import HMACAuthenticator
+from tv_gateway.nonce_storage import NonceStorage
+from tv_gateway.rate_limiter import RateLimiter
+from tv_gateway.ip_filter import IPFilter
+from tv_gateway.circuit_breaker import CircuitBreaker, CircuitState
+from tv_gateway.structured_logging import audit_logger
 from bot.config.default_config import config
 from bot.sentiment import MockSentimentProvider, SentimentAggregator, SentimentStorage
 from bot.ai_advisor import AIAdvisor
@@ -32,15 +38,84 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Phase 2.1: Load configuration from environment
+REQUIRE_HMAC = os.getenv("REQUIRE_HMAC", "false").lower() == "true"
+HMAC_SKEW_SECONDS = int(os.getenv("HMAC_SKEW_SECONDS", "60"))
+NONCE_TTL_SECONDS = int(os.getenv("NONCE_TTL_SECONDS", "600"))
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+MAX_PAYLOAD_SIZE = int(os.getenv("MAX_PAYLOAD_SIZE_KB", "32")) * 1024
+WEBHOOK_ACCEPTING_ENABLED = os.getenv("WEBHOOK_ACCEPTING_ENABLED", "true").lower() == "true"
+EXECUTION_ENABLED = os.getenv("EXECUTION_ENABLED", "true").lower() == "true"
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+RUNMODE = os.getenv("RUNMODE", "dry-run")
+CONFIRM_LIVE_TRADING = os.getenv("CONFIRM_LIVE_TRADING", "")
+
+# Circuit breaker configuration
+CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "5"))
+CIRCUIT_BREAKER_WINDOW = int(os.getenv("CIRCUIT_BREAKER_WINDOW_SECONDS", "300"))
+CIRCUIT_BREAKER_COOLDOWN = int(os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECONDS", "60"))
+
+# IP filtering configuration
+IP_ALLOWLIST = os.getenv("IP_ALLOWLIST", "")
+IP_DENYLIST = os.getenv("IP_DENYLIST", "")
+TRUSTED_PROXY_CIDRS = os.getenv("TRUSTED_PROXY_CIDRS", "")
+
 # Service state
 service_start_time = datetime.now()
+webhook_accepting = WEBHOOK_ACCEPTING_ENABLED
+execution_enabled = EXECUTION_ENABLED
+
+# Safety check: require explicit confirmation for live trading
+if RUNMODE != "dry-run" and CONFIRM_LIVE_TRADING != "YES":
+    logger.error(
+        "CRITICAL: RUNMODE is not dry-run but CONFIRM_LIVE_TRADING != 'YES'. "
+        "Refusing to start. Set CONFIRM_LIVE_TRADING=YES to enable live trading."
+    )
+    raise RuntimeError("Live trading confirmation required")
 
 # Initialize alert storage at module level (works for both tests and production)
 # Use environment variable for db path to allow test isolation
 db_path = os.getenv("ALERTS_DB_PATH", "alerts.db")
 alert_storage = AlertStorage(db_path=db_path)
+
+# Initialize Phase 2.1 security components
+nonce_storage = NonceStorage(db_path=db_path, ttl_seconds=NONCE_TTL_SECONDS)
+hmac_authenticator = HMACAuthenticator(
+    shared_secret=config.TV_WEBHOOK_SECRET,
+    skew_seconds=HMAC_SKEW_SECONDS,
+    require_hmac=REQUIRE_HMAC
+)
+rate_limiter = RateLimiter(requests_per_minute=RATE_LIMIT_PER_MINUTE)
+ip_filter = IPFilter(
+    allowlist=[s.strip() for s in IP_ALLOWLIST.split(',') if s.strip()],
+    denylist=[s.strip() for s in IP_DENYLIST.split(',') if s.strip()],
+    trusted_proxies=[s.strip() for s in TRUSTED_PROXY_CIDRS.split(',') if s.strip()]
+)
+circuit_breaker = CircuitBreaker(
+    failure_threshold=CIRCUIT_BREAKER_THRESHOLD,
+    window_seconds=CIRCUIT_BREAKER_WINDOW,
+    cooldown_seconds=CIRCUIT_BREAKER_COOLDOWN
+)
+
 execution_worker = None
 worker_task = None
+
+# Log startup configuration
+logger.info("=" * 60)
+logger.info("Phase 2.1 Production Hardening Configuration:")
+logger.info(f"  REQUIRE_HMAC: {REQUIRE_HMAC}")
+logger.info(f"  HMAC_SKEW_SECONDS: {HMAC_SKEW_SECONDS}")
+logger.info(f"  NONCE_TTL_SECONDS: {NONCE_TTL_SECONDS}")
+logger.info(f"  RATE_LIMIT_PER_MINUTE: {RATE_LIMIT_PER_MINUTE}")
+logger.info(f"  MAX_PAYLOAD_SIZE: {MAX_PAYLOAD_SIZE} bytes")
+logger.info(f"  WEBHOOK_ACCEPTING_ENABLED: {WEBHOOK_ACCEPTING_ENABLED}")
+logger.info(f"  EXECUTION_ENABLED: {EXECUTION_ENABLED}")
+logger.info(f"  RUNMODE: {RUNMODE}")
+logger.info(f"  ADMIN_TOKEN: {'configured' if ADMIN_TOKEN else 'not configured'}")
+logger.info(f"  IP_ALLOWLIST: {IP_ALLOWLIST if IP_ALLOWLIST else 'none'}")
+logger.info(f"  IP_DENYLIST: {IP_DENYLIST if IP_DENYLIST else 'none'}")
+logger.info(f"  Circuit Breaker: {CIRCUIT_BREAKER_THRESHOLD} failures in {CIRCUIT_BREAKER_WINDOW}s")
+logger.info("=" * 60)
 
 
 @asynccontextmanager
@@ -49,17 +124,38 @@ async def lifespan(app: FastAPI):
     global execution_worker, worker_task
     
     # Startup
-    logger.info("Starting TradingView webhook gateway (Phase 2)...")
+    logger.info("Starting TradingView webhook gateway (Phase 2.1)...")
     
     # Alert storage is already initialized at module level
     
-    # Initialize execution worker
-    execution_worker = create_execution_worker(alert_storage)
+    # Function to get current execution_enabled state
+    def get_execution_enabled():
+        return execution_enabled
+    
+    # Initialize execution worker with circuit breaker
+    execution_worker = create_execution_worker(
+        alert_storage,
+        circuit_breaker=circuit_breaker,
+        get_execution_enabled_func=get_execution_enabled
+    )
     
     # Start worker in background
     worker_task = asyncio.create_task(execution_worker.run())
     
-    logger.info("Service started successfully with execution worker")
+    # Start periodic nonce cleanup
+    cleanup_task = None
+    
+    async def cleanup_nonces_periodically():
+        while True:
+            await asyncio.sleep(300)  # Every 5 minutes
+            try:
+                nonce_storage.cleanup_expired()
+            except Exception as e:
+                logger.error(f"Nonce cleanup error: {e}")
+    
+    cleanup_task = asyncio.create_task(cleanup_nonces_periodically())
+    
+    logger.info("Service started successfully with execution worker and security features")
     
     yield
     
@@ -75,6 +171,9 @@ async def lifespan(app: FastAPI):
         except asyncio.TimeoutError:
             logger.warning("Worker task did not stop gracefully")
             worker_task.cancel()
+    
+    if cleanup_task:
+        cleanup_task.cancel()
     
     logger.info("Shutdown complete")
 
@@ -541,56 +640,194 @@ async def health_check():
 
 
 @app.post("/tv/webhook", response_model=WebhookResponse)
-async def receive_webhook(payload: WebhookPayload, request: Request):
+async def receive_webhook(
+    request: Request,
+    x_tv_timestamp: Optional[str] = Header(None, alias="X-TV-Timestamp"),
+    x_tv_nonce: Optional[str] = Header(None, alias="X-TV-Nonce"),
+    x_tv_signature: Optional[str] = Header(None, alias="X-TV-Signature"),
+    x_forwarded_for: Optional[str] = Header(None, alias="X-Forwarded-For")
+):
     """
     Receive and process TradingView webhook alerts.
-    Phase 2: Stores alerts with idempotency and queues for execution.
+    Phase 2.1: Enhanced security with HMAC, rate limiting, and operational safety.
     
     Args:
-        payload: Validated webhook payload
         request: FastAPI request object
+        x_tv_timestamp: Optional HMAC timestamp header
+        x_tv_nonce: Optional HMAC nonce header
+        x_tv_signature: Optional HMAC signature header
+        x_forwarded_for: X-Forwarded-For header for proxy support
         
     Returns:
         WebhookResponse with processing result
     """
-    client_ip = request.client.host if request.client else "unknown"
+    global webhook_accepting
     
-    logger.info(f"Received webhook from {client_ip}: {payload.symbol} {payload.side} @ {payload.price}")
+    # Get raw body for HMAC verification
+    raw_body = await request.body()
     
-    # Validate authentication and security
-    is_valid, validation_msg = webhook_auth.validate_all(
-        secret=payload.secret,
-        timestamp=payload.timestamp,
-        nonce=payload.nonce,
-        client_ip=client_ip
+    # Check payload size limit
+    if len(raw_body) > MAX_PAYLOAD_SIZE:
+        logger.warning(f"Payload too large: {len(raw_body)} bytes > {MAX_PAYLOAD_SIZE}")
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Payload too large: {len(raw_body)} bytes (max {MAX_PAYLOAD_SIZE})"
+        )
+    
+    # Extract client IP (considering proxies)
+    direct_ip = request.client.host if request.client else "unknown"
+    client_ip = ip_filter.extract_client_ip(direct_ip, x_forwarded_for)
+    
+    logger.info(f"Received webhook from {client_ip} (direct: {direct_ip})")
+    
+    # Check if webhook is accepting requests
+    if not webhook_accepting:
+        logger.warning(f"Webhook disabled, rejecting request from {client_ip}")
+        audit_logger.log_request_rejected(
+            reason="webhook_disabled",
+            client_ip=client_ip
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook gateway is currently disabled"
+        )
+    
+    # Check IP allowlist/denylist
+    ip_allowed, ip_reason = ip_filter.is_allowed(client_ip)
+    if not ip_allowed:
+        audit_logger.log_ip_blocked(client_ip, ip_reason)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ip_reason
+        )
+    
+    # Check rate limit
+    rate_ok, retry_after = rate_limiter.check_rate_limit(client_ip)
+    if not rate_ok:
+        audit_logger.log_rate_limit(client_ip, retry_after)
+        response = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Rate limit exceeded"},
+            headers={"Retry-After": str(retry_after)}
+        )
+        return response
+    
+    # Parse JSON payload
+    try:
+        payload_dict = json.loads(raw_body)
+        payload = WebhookPayload(**payload_dict)
+    except Exception as e:
+        logger.error(f"Failed to parse payload: {e}")
+        audit_logger.log_request_rejected(
+            reason=f"invalid_payload: {str(e)}",
+            client_ip=client_ip
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid payload: {str(e)}"
+        )
+    
+    # HMAC authentication (if headers provided or required)
+    hmac_valid, hmac_msg, used_hmac = hmac_authenticator.verify_hmac_request(
+        timestamp=x_tv_timestamp,
+        nonce=x_tv_nonce,
+        body=raw_body,
+        signature=x_tv_signature
     )
     
-    if not is_valid:
-        logger.warning(f"Validation failed from {client_ip}: {validation_msg}")
-        
-        # Store rejected alert
-        alert = Alert(
-            received_at=datetime.now().isoformat(),
-            symbol=payload.symbol,
-            timeframe=payload.timeframe,
-            side=payload.side,
-            setup_id=payload.setup_id,
-            confidence=payload.confidence,
-            price=payload.price,
-            event_time=payload.event_time,
-            nonce=payload.nonce,
-            payload_json=json.dumps(payload.model_dump()),
-            validation_result=f"FAILED: {validation_msg}",
-            status=AlertStatus.FAILED,
-            fail_reason=validation_msg
+    if not hmac_valid:
+        logger.warning(f"HMAC validation failed from {client_ip}: {hmac_msg}")
+        audit_logger.log_hmac_verification(
+            success=False,
+            nonce=x_tv_nonce or "none",
+            client_ip=client_ip,
+            reason=hmac_msg
         )
-        
-        alert_storage.store_alert(alert)
-        
+        audit_logger.log_request_rejected(
+            reason=f"hmac_failed: {hmac_msg}",
+            client_ip=client_ip,
+            symbol=payload.symbol,
+            nonce=x_tv_nonce
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=validation_msg
+            detail=hmac_msg
         )
+    
+    # Log HMAC success if used
+    if used_hmac:
+        audit_logger.log_hmac_verification(
+            success=True,
+            nonce=x_tv_nonce,
+            client_ip=client_ip
+        )
+    
+    # Determine nonce for replay protection
+    # Use HMAC nonce if provided, otherwise payload nonce
+    nonce_for_replay = x_tv_nonce or payload.nonce
+    timestamp_for_replay = x_tv_timestamp or str(payload.timestamp)
+    
+    # Check nonce replay (DB-backed)
+    nonce_ok, nonce_msg = nonce_storage.check_and_store(
+        nonce=nonce_for_replay,
+        timestamp=timestamp_for_replay
+    )
+    
+    if not nonce_ok:
+        logger.warning(f"Replay detected from {client_ip}: {nonce_msg}")
+        audit_logger.log_replay_detected(nonce_for_replay, client_ip)
+        audit_logger.log_request_rejected(
+            reason=nonce_msg,
+            client_ip=client_ip,
+            symbol=payload.symbol,
+            nonce=nonce_for_replay
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=nonce_msg
+        )
+    
+    # Legacy secret validation (backward compatibility)
+    if not used_hmac:
+        is_valid, validation_msg = webhook_auth.validate_all(
+            secret=payload.secret,
+            timestamp=payload.timestamp,
+            nonce=payload.nonce,
+            client_ip=client_ip
+        )
+        
+        if not is_valid:
+            logger.warning(f"Legacy validation failed from {client_ip}: {validation_msg}")
+            audit_logger.log_request_rejected(
+                reason=f"legacy_auth_failed: {validation_msg}",
+                client_ip=client_ip,
+                symbol=payload.symbol,
+                nonce=payload.nonce
+            )
+            
+            # Store rejected alert
+            alert = Alert(
+                received_at=datetime.now().isoformat(),
+                symbol=payload.symbol,
+                timeframe=payload.timeframe,
+                side=payload.side,
+                setup_id=payload.setup_id,
+                confidence=payload.confidence,
+                price=payload.price,
+                event_time=payload.event_time,
+                nonce=payload.nonce,
+                payload_json=json.dumps(payload.model_dump()),
+                validation_result=f"FAILED: {validation_msg}",
+                status=AlertStatus.FAILED,
+                fail_reason=validation_msg
+            )
+            
+            alert_storage.store_alert(alert)
+            
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=validation_msg
+            )
     
     # Create alert object
     alert = Alert(
@@ -629,10 +866,24 @@ async def receive_webhook(payload: WebhookPayload, request: Request):
             action_taken="ignored_duplicate"
         )
     
+    # Determine auth method for logging
+    auth_method = "hmac" if used_hmac else "secret"
+    
     # Log successful alert acceptance
     logger.info(
         f"Alert accepted: id={alert_id}, {payload.symbol} {payload.side} "
         f"confidence={payload.confidence} setup={payload.setup_id}"
+    )
+    
+    audit_logger.log_request_accepted(
+        alert_id=alert_id,
+        symbol=payload.symbol,
+        side=payload.side,
+        setup_id=payload.setup_id,
+        confidence=payload.confidence,
+        client_ip=client_ip,
+        auth_method=auth_method,
+        idempotency_key=f"{payload.nonce}:{payload.symbol}:{payload.event_time}"
     )
     
     # Alert will be picked up by execution worker
@@ -642,6 +893,166 @@ async def receive_webhook(payload: WebhookPayload, request: Request):
         alert_id=str(alert_id),
         action_taken="accepted"
     )
+
+
+# ============================================================================
+# Admin Endpoints (Phase 2.1)
+# ============================================================================
+
+def verify_admin_token(authorization: Optional[str] = Header(None)):
+    """Verify admin token from Authorization header."""
+    if not ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin endpoints not configured (ADMIN_TOKEN not set)"
+        )
+    
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required"
+        )
+    
+    # Support both "Bearer <token>" and direct token
+    token = authorization.replace("Bearer ", "").strip()
+    
+    if token != ADMIN_TOKEN:
+        logger.warning("Invalid admin token attempt")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid admin token"
+        )
+    
+    return True
+
+
+@app.post("/admin/execution/enable")
+async def admin_enable_execution(authorized: bool = Depends(verify_admin_token)):
+    """Enable execution (admin endpoint)."""
+    global execution_enabled
+    
+    old_state = execution_enabled
+    execution_enabled = True
+    
+    logger.warning("Execution ENABLED by admin")
+    audit_logger.log_kill_switch("execution_enabled", True)
+    
+    return {
+        "success": True,
+        "message": "Execution enabled",
+        "previous_state": old_state,
+        "current_state": execution_enabled
+    }
+
+
+@app.post("/admin/execution/disable")
+async def admin_disable_execution(authorized: bool = Depends(verify_admin_token)):
+    """Disable execution (admin endpoint)."""
+    global execution_enabled
+    
+    old_state = execution_enabled
+    execution_enabled = False
+    
+    logger.warning("Execution DISABLED by admin")
+    audit_logger.log_kill_switch("execution_enabled", False)
+    
+    return {
+        "success": True,
+        "message": "Execution disabled",
+        "previous_state": old_state,
+        "current_state": execution_enabled
+    }
+
+
+@app.post("/admin/webhook/enable")
+async def admin_enable_webhook(authorized: bool = Depends(verify_admin_token)):
+    """Enable webhook accepting (admin endpoint)."""
+    global webhook_accepting
+    
+    old_state = webhook_accepting
+    webhook_accepting = True
+    
+    logger.warning("Webhook ENABLED by admin")
+    audit_logger.log_kill_switch("webhook_accepting", True)
+    
+    return {
+        "success": True,
+        "message": "Webhook enabled",
+        "previous_state": old_state,
+        "current_state": webhook_accepting
+    }
+
+
+@app.post("/admin/webhook/disable")
+async def admin_disable_webhook(authorized: bool = Depends(verify_admin_token)):
+    """Disable webhook accepting (admin endpoint)."""
+    global webhook_accepting
+    
+    old_state = webhook_accepting
+    webhook_accepting = False
+    
+    logger.warning("Webhook DISABLED by admin")
+    audit_logger.log_kill_switch("webhook_accepting", False)
+    
+    return {
+        "success": True,
+        "message": "Webhook disabled",
+        "previous_state": old_state,
+        "current_state": webhook_accepting
+    }
+
+
+@app.post("/admin/circuit/reset")
+async def admin_reset_circuit(authorized: bool = Depends(verify_admin_token)):
+    """Reset circuit breaker (admin endpoint)."""
+    old_state = circuit_breaker.state
+    circuit_breaker.force_reset()
+    
+    logger.warning("Circuit breaker reset by admin")
+    
+    return {
+        "success": True,
+        "message": "Circuit breaker reset",
+        "previous_state": old_state,
+        "current_state": circuit_breaker.state
+    }
+
+
+@app.get("/admin/config")
+async def admin_get_config(authorized: bool = Depends(verify_admin_token)):
+    """Get configuration (admin endpoint, secrets redacted)."""
+    return {
+        "success": True,
+        "config": {
+            "security": {
+                "require_hmac": REQUIRE_HMAC,
+                "hmac_skew_seconds": HMAC_SKEW_SECONDS,
+                "nonce_ttl_seconds": NONCE_TTL_SECONDS,
+                "rate_limit_per_minute": RATE_LIMIT_PER_MINUTE,
+                "max_payload_size_kb": MAX_PAYLOAD_SIZE / 1024,
+                "secret_configured": bool(config.TV_WEBHOOK_SECRET),
+                "admin_token_configured": bool(ADMIN_TOKEN)
+            },
+            "operational": {
+                "webhook_accepting": webhook_accepting,
+                "execution_enabled": execution_enabled,
+                "runmode": RUNMODE,
+                "confirm_live_trading": bool(CONFIRM_LIVE_TRADING)
+            },
+            "circuit_breaker": circuit_breaker.get_status(),
+            "ip_filtering": ip_filter.get_stats(),
+            "rate_limiter": rate_limiter.get_stats(),
+            "nonce_storage": {
+                "active_nonces": nonce_storage.count_nonces(),
+                "ttl_seconds": NONCE_TTL_SECONDS
+            }
+        }
+    }
+
+
+# ============================================================================
+# End Admin Endpoints
+# ============================================================================
 
 
 @app.get("/api/sentiment/summary")
@@ -958,6 +1369,7 @@ async def get_alert(alert_id: int):
 async def get_stats():
     """
     Get alert statistics and system status.
+    Phase 2.1: Includes circuit breaker status and operational flags.
     
     Returns:
         Statistics including counts by status and last processed time
@@ -973,6 +1385,18 @@ async def get_stats():
                 "status": "running",
                 "uptime_seconds": uptime,
                 "worker_enabled": execution_worker is not None
+            },
+            "operational": {
+                "webhook_accepting": webhook_accepting,
+                "execution_enabled": execution_enabled,
+                "runmode": RUNMODE,
+                "admin_enabled": bool(ADMIN_TOKEN)
+            },
+            "circuit_breaker": circuit_breaker.get_status(),
+            "security": {
+                "require_hmac": REQUIRE_HMAC,
+                "rate_limit_per_minute": RATE_LIMIT_PER_MINUTE,
+                "active_nonces": nonce_storage.count_nonces()
             },
             "alerts": stats
         }

@@ -119,7 +119,8 @@ def test_webhook_endpoint_invalid_side(client, valid_payload):
     
     response = client.post("/tv/webhook", json=payload)
     
-    assert response.status_code == 422  # Validation error
+    # Phase 2.1: Returns 400 for validation errors
+    assert response.status_code == 400
 
 
 def test_webhook_endpoint_invalid_timeframe(client, valid_payload):
@@ -129,7 +130,8 @@ def test_webhook_endpoint_invalid_timeframe(client, valid_payload):
     
     response = client.post("/tv/webhook", json=payload)
     
-    assert response.status_code == 422
+    # Phase 2.1: Returns 400 for validation errors
+    assert response.status_code == 400
 
 
 def test_webhook_endpoint_missing_required_field(client, valid_payload):
@@ -139,7 +141,8 @@ def test_webhook_endpoint_missing_required_field(client, valid_payload):
     
     response = client.post("/tv/webhook", json=payload)
     
-    assert response.status_code == 422
+    # Phase 2.1: Returns 400 for validation errors
+    assert response.status_code == 400
 
 
 def test_alerts_list_endpoint(client):

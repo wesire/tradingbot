@@ -1,6 +1,6 @@
 """
 Background execution worker that processes queued alerts.
-Validates freshness, applies risk gates, and sends execution requests.
+Phase 2.1: Integrated with circuit breaker and kill switches.
 """
 import asyncio
 from typing import Optional, List
@@ -10,6 +10,8 @@ import os
 
 from tv_gateway.alert_storage import AlertStorage, Alert, AlertStatus
 from tv_gateway.bot_client import BotClient, Signal, ExecutionStatus, create_bot_client
+from tv_gateway.circuit_breaker import CircuitBreaker
+from tv_gateway.structured_logging import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +23,14 @@ class ExecutionWorker:
         self,
         storage: AlertStorage,
         bot_client: BotClient,
+        circuit_breaker: Optional[CircuitBreaker] = None,
         poll_interval: int = 2,
         max_alert_age: int = 600,
         min_confidence: float = 0.9,
         allowed_symbols: Optional[List[str]] = None,
         allowed_timeframes: Optional[List[str]] = None,
-        execution_enabled: bool = True
+        execution_enabled: bool = True,
+        get_execution_enabled_func: Optional[callable] = None
     ):
         """
         Initialize execution worker.
@@ -34,20 +38,25 @@ class ExecutionWorker:
         Args:
             storage: Alert storage instance
             bot_client: Bot client for execution
+            circuit_breaker: Circuit breaker instance (Phase 2.1)
             poll_interval: Polling interval in seconds
             max_alert_age: Maximum alert age in seconds
             min_confidence: Minimum confidence threshold
             allowed_symbols: List of allowed symbols (None = all allowed)
             allowed_timeframes: List of allowed timeframes (None = all allowed)
             execution_enabled: Enable actual execution (False = dry-run only)
+            get_execution_enabled_func: Function to get current execution_enabled state
         """
         self.storage = storage
         self.bot_client = bot_client
+        self.circuit_breaker = circuit_breaker
         self.poll_interval = poll_interval
         self.max_alert_age = max_alert_age
         self.min_confidence = min_confidence
         self.allowed_symbols = allowed_symbols or []
         self.allowed_timeframes = allowed_timeframes or []
+        self.execution_enabled = execution_enabled
+        self.get_execution_enabled = get_execution_enabled_func
         self.execution_enabled = execution_enabled
         
         self._running = False
@@ -201,6 +210,7 @@ class ExecutionWorker:
     def _process_alert(self, alert: Alert):
         """
         Process a single alert through risk gates and execution.
+        Phase 2.1: Integrated with circuit breaker and dynamic execution flag.
         
         Args:
             alert: Alert to process
@@ -221,17 +231,65 @@ class ExecutionWorker:
                 fail_reason=fail_reason
             )
             logger.info(f"Alert {alert.id} rejected: {fail_reason}")
+            
+            audit_logger.log_status_transition(
+                alert_id=alert.id,
+                old_status="queued",
+                new_status="failed",
+                symbol=alert.symbol,
+                side=alert.side,
+                setup_id=alert.setup_id,
+                reason=fail_reason
+            )
             return
         
-        # Check if execution is enabled
-        if not self.execution_enabled:
+        # Check if execution is enabled (use dynamic func if provided)
+        current_execution_enabled = (
+            self.get_execution_enabled() if self.get_execution_enabled
+            else self.execution_enabled
+        )
+        
+        if not current_execution_enabled:
             logger.info(f"Alert {alert.id} passed gates but execution disabled")
             self.storage.update_status(
                 alert_id=alert.id,
-                status=AlertStatus.FAILED,
-                fail_reason="Execution disabled"
+                status=AlertStatus.IGNORED,
+                fail_reason="execution_disabled"
+            )
+            
+            audit_logger.log_status_transition(
+                alert_id=alert.id,
+                old_status="queued",
+                new_status="ignored",
+                symbol=alert.symbol,
+                side=alert.side,
+                setup_id=alert.setup_id,
+                reason="execution_disabled"
             )
             return
+        
+        # Check circuit breaker
+        if self.circuit_breaker:
+            allowed, circuit_reason = self.circuit_breaker.is_request_allowed()
+            
+            if not allowed:
+                logger.warning(f"Alert {alert.id} blocked by circuit breaker: {circuit_reason}")
+                self.storage.update_status(
+                    alert_id=alert.id,
+                    status=AlertStatus.FAILED,
+                    fail_reason=circuit_reason
+                )
+                
+                audit_logger.log_status_transition(
+                    alert_id=alert.id,
+                    old_status="queued",
+                    new_status="failed",
+                    symbol=alert.symbol,
+                    side=alert.side,
+                    setup_id=alert.setup_id,
+                    reason=circuit_reason
+                )
+                return
         
         # Create signal
         signal = Signal(
@@ -248,6 +306,10 @@ class ExecutionWorker:
             result = self.bot_client.execute_signal(signal)
             
             if result.status == ExecutionStatus.SUCCESS:
+                # Record success in circuit breaker
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_success()
+                
                 self.storage.update_status(
                     alert_id=alert.id,
                     status=AlertStatus.EXECUTED,
@@ -257,7 +319,21 @@ class ExecutionWorker:
                     f"Alert {alert.id} executed successfully: "
                     f"order_id={result.order_id}"
                 )
+                
+                audit_logger.log_status_transition(
+                    alert_id=alert.id,
+                    old_status="queued",
+                    new_status="executed",
+                    symbol=alert.symbol,
+                    side=alert.side,
+                    setup_id=alert.setup_id,
+                    execution_ref=result.order_id
+                )
             else:
+                # Record failure in circuit breaker
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_failure()
+                
                 self.storage.update_status(
                     alert_id=alert.id,
                     status=AlertStatus.FAILED,
@@ -266,8 +342,22 @@ class ExecutionWorker:
                 logger.warning(
                     f"Alert {alert.id} execution failed: {result.message}"
                 )
+                
+                audit_logger.log_status_transition(
+                    alert_id=alert.id,
+                    old_status="queued",
+                    new_status="failed",
+                    symbol=alert.symbol,
+                    side=alert.side,
+                    setup_id=alert.setup_id,
+                    reason=result.message
+                )
         
         except Exception as e:
+            # Record failure in circuit breaker
+            if self.circuit_breaker:
+                self.circuit_breaker.record_failure()
+            
             error_msg = f"Execution error: {e}"
             logger.error(f"Alert {alert.id} error: {error_msg}", exc_info=True)
             
@@ -275,6 +365,16 @@ class ExecutionWorker:
                 alert_id=alert.id,
                 status=AlertStatus.FAILED,
                 fail_reason=error_msg
+            )
+            
+            audit_logger.log_status_transition(
+                alert_id=alert.id,
+                old_status="queued",
+                new_status="failed",
+                symbol=alert.symbol,
+                side=alert.side,
+                setup_id=alert.setup_id,
+                reason=error_msg
             )
     
     async def run(self):
@@ -319,12 +419,19 @@ class ExecutionWorker:
         self._running = False
 
 
-def create_execution_worker(storage: AlertStorage) -> ExecutionWorker:
+def create_execution_worker(
+    storage: AlertStorage,
+    circuit_breaker: Optional[CircuitBreaker] = None,
+    get_execution_enabled_func: Optional[callable] = None
+) -> ExecutionWorker:
     """
     Factory function to create execution worker from environment config.
+    Phase 2.1: Integrated with circuit breaker and dynamic execution flag.
     
     Args:
         storage: Alert storage instance
+        circuit_breaker: Circuit breaker instance (optional)
+        get_execution_enabled_func: Function to get current execution_enabled state
         
     Returns:
         ExecutionWorker instance
@@ -354,9 +461,11 @@ def create_execution_worker(storage: AlertStorage) -> ExecutionWorker:
     return ExecutionWorker(
         storage=storage,
         bot_client=bot_client,
+        circuit_breaker=circuit_breaker,
         max_alert_age=max_alert_age,
         min_confidence=min_confidence,
         allowed_symbols=allowed_symbols,
         allowed_timeframes=allowed_timeframes,
-        execution_enabled=execution_enabled
+        execution_enabled=execution_enabled,
+        get_execution_enabled_func=get_execution_enabled_func
     )

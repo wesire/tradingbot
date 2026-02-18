@@ -332,9 +332,9 @@ def test_process_alert_execution_disabled(storage, mock_bot_success):
     # Process alert
     worker._process_alert(alert)
     
-    # Verify status updated to failed with reason
+    # Verify status updated to ignored with reason (Phase 2.1 change)
     updated_alert = storage.get_alert(alert_id)
-    assert updated_alert.status == AlertStatus.FAILED
+    assert updated_alert.status == AlertStatus.IGNORED
     assert "disabled" in updated_alert.fail_reason.lower()
 
 

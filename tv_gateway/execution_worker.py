@@ -55,8 +55,11 @@ class ExecutionWorker:
         self.min_confidence = min_confidence
         self.allowed_symbols = allowed_symbols or []
         self.allowed_timeframes = allowed_timeframes or []
-        self.execution_enabled = execution_enabled
         self.get_execution_enabled = get_execution_enabled_func
+        
+        # Use initial execution_enabled if no dynamic func provided
+        if not self.get_execution_enabled:
+            self.execution_enabled = execution_enabled
         self.execution_enabled = execution_enabled
         
         self._running = False

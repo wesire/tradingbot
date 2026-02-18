@@ -143,6 +143,8 @@ async def lifespan(app: FastAPI):
     worker_task = asyncio.create_task(execution_worker.run())
     
     # Start periodic nonce cleanup
+    cleanup_task = None
+    
     async def cleanup_nonces_periodically():
         while True:
             await asyncio.sleep(300)  # Every 5 minutes
@@ -170,7 +172,8 @@ async def lifespan(app: FastAPI):
             logger.warning("Worker task did not stop gracefully")
             worker_task.cancel()
     
-    cleanup_task.cancel()
+    if cleanup_task:
+        cleanup_task.cancel()
     
     logger.info("Shutdown complete")
 

@@ -3,7 +3,7 @@ IP filtering with CIDR support for allowlist/denylist.
 Handles X-Forwarded-For with trusted proxy validation.
 """
 import ipaddress
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class IPFilter:
             f"trusted_proxies={len(self.trusted_proxies)}"
         )
     
-    def _parse_cidrs(self, cidr_list: List[str]) -> List[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    def _parse_cidrs(self, cidr_list: List[str]) -> List[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]]:
         """Parse CIDR strings into network objects."""
         networks = []
         
@@ -61,7 +61,7 @@ class IPFilter:
     def _ip_in_networks(
         self,
         ip: str,
-        networks: List[ipaddress.IPv4Network | ipaddress.IPv6Network]
+        networks: List[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]]
     ) -> bool:
         """Check if IP is in any of the networks."""
         try:

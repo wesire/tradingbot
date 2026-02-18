@@ -3,7 +3,7 @@ Circuit breaker pattern for bot execution failures.
 Opens circuit after N failures in M minutes, preventing cascading failures.
 """
 import time
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from datetime import datetime, timedelta
 from enum import Enum
 import logging
@@ -124,7 +124,7 @@ class CircuitBreaker:
         
         logger.info("Circuit breaker HALF-OPEN: testing recovery")
     
-    def is_request_allowed(self) -> tuple[bool, Optional[str]]:
+    def is_request_allowed(self) -> Tuple[bool, Optional[str]]:
         """
         Check if execution request should be allowed.
         

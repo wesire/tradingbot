@@ -37,6 +37,11 @@ jobs:
           pip install pandas numpy pydantic pydantic-settings python-dotenv pyyaml loguru httpx aiohttp
           pip install fastapi uvicorn sqlalchemy aiosqlite python-multipart
           pip install cryptography python-jose[cryptography] schedule
+          pip install requests cachetools vaderSentiment ccxt websockets
+          pip install pydantic pydantic-settings python-dotenv pyyaml loguru httpx aiohttp
+          pip install fastapi uvicorn sqlalchemy aiosqlite python-multipart
+          pip install cryptography python-jose[cryptography] schedule
+          pip install types-requests types-cachetools pandas
 
       - name: Lint with flake8
         run: |
@@ -58,6 +63,12 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml \
             -v \
+          pytest tests/ \ 
+            --cov=bot \ 
+            --cov=tv_gateway \ 
+            --cov-report=term-missing \ 
+            --cov-report=xml \ 
+            -v \ 
             --timeout=60
         env:
           PYTHONPATH: ${{ github.workspace }}

@@ -13,21 +13,21 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 **Goal**: Replace mock sentiment provider with real news/social media data sources
 
 **Deliverables**:
-- [ ] Integrate CryptoPanic API for crypto news sentiment
-- [ ] Add Twitter/X sentiment analysis (using Twitter API v2)
-- [ ] Implement Reddit sentiment scraper (r/CryptoCurrency, r/Bitcoin)
-- [ ] Add weighted sentiment combining multiple sources
+- [x] Integrate CryptoPanic API for crypto news sentiment
+- [ ] Add Twitter/X sentiment analysis (deferred to follow-up PR)
+- [x] Implement Reddit sentiment scraper (r/CryptoCurrency, r/Bitcoin)
+- [x] Add weighted sentiment combining multiple sources
 - [ ] Create sentiment backtesting framework to validate predictive power
 - [ ] Add sentiment alerts (e.g., "BTC sentiment spike detected")
 
 **Technical Tasks**:
-- Create `CryptoPanicSentimentProvider` class
-- Create `TwitterSentimentProvider` class
-- Create `RedditSentimentProvider` class
-- Add API credentials to .env
-- Implement rate limiting for API calls
-- Add caching layer to reduce API costs
-- Update dashboard to show sentiment sources
+- [x] Create `CryptoPanicSentimentProvider` class
+- [ ] Create `TwitterSentimentProvider` class (deferred to follow-up PR)
+- [x] Create `RedditSentimentProvider` class
+- [x] Add API credentials to .env
+- [x] Implement rate limiting for API calls
+- [x] Add caching layer to reduce API costs
+- [ ] Update dashboard to show sentiment sources
 
 **Success Criteria**:
 - All 3 sentiment sources operational

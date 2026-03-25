@@ -680,8 +680,9 @@ async def receive_webhook(
     
     logger.info(f"Received webhook from {client_ip} (direct: {direct_ip})")
     
-    # Check if webhook is accepting requests
-    if not webhook_accepting:
+    # Check if webhook is accepting requests (re-read env var for runtime config changes)
+    env_accepting = os.getenv("WEBHOOK_ACCEPTING_ENABLED", "true").lower() == "true"
+    if not webhook_accepting or not env_accepting:
         logger.warning(f"Webhook disabled, rejecting request from {client_ip}")
         audit_logger.log_request_rejected(
             reason="webhook_disabled",
@@ -691,7 +692,7 @@ async def receive_webhook(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Webhook gateway is currently disabled"
         )
-    
+
     # Check IP allowlist/denylist
     ip_allowed, ip_reason = ip_filter.is_allowed(client_ip)
     if not ip_allowed:
@@ -700,7 +701,11 @@ async def receive_webhook(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=ip_reason
         )
-    
+
+    # Reconfigure rate limiter if RATE_LIMIT_PER_MINUTE env var has changed
+    current_rpm = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+    rate_limiter.reconfigure(current_rpm)
+
     # Check rate limit
     rate_ok, retry_after = rate_limiter.check_rate_limit(client_ip)
     if not rate_ok:

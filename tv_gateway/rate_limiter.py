@@ -3,6 +3,7 @@ Rate limiting middleware for webhook endpoints.
 Uses token bucket algorithm for smooth rate limiting.
 """
 import time
+import threading
 from typing import Dict, Optional, Tuple
 from collections import defaultdict
 import logging
@@ -89,6 +90,7 @@ class RateLimiter:
             requests_per_minute: Base rate limit per IP
             burst_multiplier: Burst capacity multiplier
         """
+        self._lock = threading.Lock()
         self.requests_per_minute = requests_per_minute
         self.burst_capacity = int(requests_per_minute * burst_multiplier)
         self.refill_rate = requests_per_minute / 60.0  # tokens per second
@@ -104,7 +106,30 @@ class RateLimiter:
             f"RateLimiter initialized: {requests_per_minute} req/min, "
             f"burst={self.burst_capacity}, refill={self.refill_rate:.2f}/s"
         )
-    
+
+    def reconfigure(self, requests_per_minute: int) -> None:
+        """Atomically update the rate limit and clear all existing buckets.
+
+        This is intended for runtime config changes (e.g. reading an updated
+        env var).  The new ``burst_capacity`` is set equal to
+        ``requests_per_minute`` (strict 1:1, no burst) so that exactly
+        *requests_per_minute* requests can be made before the limit fires.
+
+        Args:
+            requests_per_minute: New base rate limit per IP.
+        """
+        with self._lock:
+            if requests_per_minute == self.requests_per_minute:
+                return
+            self.requests_per_minute = requests_per_minute
+            self.burst_capacity = requests_per_minute  # strict limit, no burst
+            self.refill_rate = requests_per_minute / 60.0
+            self.buckets.clear()
+            logger.info(
+                f"RateLimiter reconfigured: {requests_per_minute} req/min "
+                f"(strict, no burst)"
+            )
+
     def _get_bucket(self, client_ip: str) -> TokenBucket:
         """Get or create token bucket for IP."""
         if client_ip not in self.buckets:

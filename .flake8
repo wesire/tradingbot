@@ -1,0 +1,30 @@
+[flake8]
+max-line-length = 120
+extend-ignore =
+    # Style / formatting (handled by black)
+    E203, W503, E501,
+    # Whitespace in blank lines (pre-existing in original code)
+    W291, W293, W292,
+    # Unused imports in original code (freqtrade runtime imports, etc.)
+    F401,
+    # Undefined names injected by freqtrade at runtime (Trade, datetime)
+    F821,
+    # Comparison to True in freqtrade strategy pattern
+    E712,
+    # Continuation line indentation style
+    E128,
+    # Module-level import not at top (test files)
+    E402,
+    # Local variable assigned but never used
+    F841,
+    # f-string missing placeholders in scripts (pre-existing)
+    F541,
+exclude =
+    bot/data/,
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    node_modules,
+    dashboard/,
+    artifacts/

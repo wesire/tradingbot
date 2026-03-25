@@ -91,3 +91,6 @@ dashboard/node_modules/
 dashboard/dist/
 dashboard/.vite/
 dashboard/build/
+
+# Allow dashboard source lib (not a Python lib/ directory)
+!dashboard/src/lib/

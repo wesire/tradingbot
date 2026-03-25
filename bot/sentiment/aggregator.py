@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class AggregatedSentiment:
     """Aggregated sentiment for an asset."""
-    
+
     def __init__(
         self,
         asset: str,
@@ -25,7 +25,7 @@ class AggregatedSentiment:
     ):
         """
         Initialize aggregated sentiment.
-        
+
         Args:
             asset: Asset symbol
             score: Aggregated sentiment score (-1 to 1)
@@ -40,7 +40,7 @@ class AggregatedSentiment:
         self.sample_size = sample_size
         self.trend = trend
         self.updated_at = updated_at or datetime.now(timezone.utc)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -55,19 +55,45 @@ class AggregatedSentiment:
 
 class SentimentAggregator:
     """
-    Aggregates sentiment data from multiple providers and computes overall scores.
+    Aggregates sentiment data from multiple providers with configurable
+    per-provider weights.
+
+    Each provider is identified by its class name.  Weights are normalised
+    so they always sum to 1.0.  If a provider fails or returns no data, its
+    weight is redistributed proportionally among the remaining active
+    providers.  Individual provider scores and weights are logged at INFO
+    level so operators can audit the aggregation.
     """
-    
-    def __init__(self, providers: List[SentimentProvider]):
+
+    def __init__(
+        self,
+        providers: List[SentimentProvider],
+        weights: Optional[Dict[str, float]] = None,
+    ):
         """
         Initialize aggregator.
-        
+
         Args:
-            providers: List of sentiment providers
+            providers: List of sentiment providers.
+            weights: Optional mapping of provider class name to weight
+                (e.g. ``{"CryptoPanicSentimentProvider": 0.4,
+                "RedditSentimentProvider": 0.3,
+                "MockSentimentProvider": 0.3}``).
+                Weights are normalised internally.  When omitted, all
+                providers receive equal weight.
         """
         self.providers = providers
-        logger.info(f"Initialized SentimentAggregator with {len(providers)} providers")
-    
+        self._weights: Dict[str, float] = weights or {}
+        logger.info(
+            "Initialized SentimentAggregator with %d providers: %s",
+            len(providers),
+            [type(p).__name__ for p in providers],
+        )
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
     def aggregate_sentiment(
         self,
         asset: str,
@@ -75,56 +101,103 @@ class SentimentAggregator:
     ) -> Optional[AggregatedSentiment]:
         """
         Aggregate sentiment for a single asset.
-        
+
+        Each provider's contribution is weighted by its configured weight
+        (defaulting to equal weighting when weights are not specified).
+        Providers that raise exceptions or return no data have their weight
+        redistributed proportionally among the remaining providers.
+
         Args:
             asset: Asset symbol
             lookback_hours: Hours of history to consider
-            
+
         Returns:
             AggregatedSentiment object or None if no data available
         """
-        all_sentiments: List[SentimentData] = []
-        
-        # Collect sentiment from all providers
-        for provider in self.providers:
+        # Collect per-provider data, skipping failures
+        # Use index-qualified keys so multiple instances of the same class
+        # can coexist (e.g. two MockSentimentProvider instances).
+        provider_results: Dict[str, List[SentimentData]] = {}
+        provider_weights: Dict[str, float] = {}
+
+        for idx, provider in enumerate(self.providers):
+            class_name = type(provider).__name__
+            key = f"{class_name}[{idx}]"
+            raw_weight = self._weights.get(class_name, 1.0)
             try:
                 sentiments = provider.get_sentiment(asset, lookback_hours)
-                all_sentiments.extend(sentiments)
-            except Exception as e:
-                logger.error(f"Error getting sentiment from provider: {e}")
-                continue
-        
-        if not all_sentiments:
-            logger.warning(f"No sentiment data available for {asset}")
+                if sentiments:
+                    provider_results[key] = sentiments
+                    provider_weights[key] = raw_weight
+                else:
+                    logger.warning(
+                        "Provider %s returned no data for %s – "
+                        "redistributing weight %.2f",
+                        class_name, asset, raw_weight,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Error getting sentiment from provider %s for %s: %s",
+                    class_name, asset, exc,
+                )
+
+        if not provider_results:
+            logger.warning("No sentiment data available for %s", asset)
             return None
-        
-        # Calculate weighted average score
-        total_weight = 0
-        weighted_sum = 0
-        
-        for sentiment in all_sentiments:
-            weight = sentiment.confidence
-            weighted_sum += sentiment.score * weight
-            total_weight += weight
-        
-        avg_score = weighted_sum / total_weight if total_weight > 0 else 0
-        
-        # Calculate overall confidence (average of individual confidences)
-        avg_confidence = statistics.mean([s.confidence for s in all_sentiments])
-        
+
+        # Normalise weights for active providers
+        total_weight = sum(provider_weights.values())
+        norm_weights = {
+            k: v / total_weight for k, v in provider_weights.items()
+        }
+
+        # Compute provider-level scores then combine with normalised weights
+        weighted_score = 0.0
+        weighted_confidence = 0.0
+        total_samples = 0
+
+        for name, sentiments in provider_results.items():
+            w = norm_weights[name]
+
+            # Confidence-weighted score within this provider
+            provider_conf_sum = sum(s.confidence for s in sentiments)
+            if provider_conf_sum > 0:
+                provider_score = (
+                    sum(s.score * s.confidence for s in sentiments)
+                    / provider_conf_sum
+                )
+            else:
+                provider_score = statistics.mean(
+                    [s.score for s in sentiments]
+                )
+
+            provider_confidence = statistics.mean(
+                [s.confidence for s in sentiments]
+            )
+
+            logger.info(
+                "Sentiment provider %s [weight=%.2f]: "
+                "score=%.3f confidence=%.3f samples=%d",
+                key, w, provider_score, provider_confidence, len(sentiments),
+            )
+
+            weighted_score += provider_score * w
+            weighted_confidence += provider_confidence * w
+            total_samples += len(sentiments)
+
         # Determine trend
-        if avg_score > 0.15:
+        if weighted_score > 0.15:
             trend = "bullish"
-        elif avg_score < -0.15:
+        elif weighted_score < -0.15:
             trend = "bearish"
         else:
             trend = "neutral"
-        
+
         return AggregatedSentiment(
             asset=asset,
-            score=avg_score,
-            confidence=avg_confidence,
-            sample_size=len(all_sentiments),
+            score=weighted_score,
+            confidence=weighted_confidence,
+            sample_size=total_samples,
             trend=trend
         )
     

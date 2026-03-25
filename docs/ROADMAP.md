@@ -17,7 +17,8 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 - [x] Add Twitter/X sentiment analysis (`TwitterSentimentProvider`)
 - [x] Implement Reddit sentiment scraper (r/CryptoCurrency, r/Bitcoin)
 - [x] Add weighted sentiment combining multiple sources
-- [x] Create sentiment backtesting framework to validate predictive power
+- [x] Fear & Greed Index integration (`FearGreedProvider`)
+- [x] Economic Calendar filter (`EconomicCalendarFilter`)
 - [ ] Add sentiment alerts (e.g., "BTC sentiment spike detected")
 
 **Technical Tasks**:
@@ -113,45 +114,56 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 ### Future Enhancements (Post-Q3 2026)
 
 ### Portfolio Optimization
-- Implement modern portfolio theory for position sizing
-- Add correlation analysis between pairs
-- Dynamic allocation based on pair performance
-- Risk parity allocation strategy
+- [x] Implement correlation analysis between pairs (`CorrelationManager`)
+- [x] Risk parity allocation strategy (`RiskParityAllocator`)
+- [x] Portfolio performance tracker with Sharpe, Sortino, Calmar ratios (`PerformanceTracker`)
+- [ ] Modern portfolio theory (mean-variance optimisation) position sizing
+- [ ] Dynamic allocation based on pair performance
 
 ### Advanced Order Types
-- Iceberg orders (hide large orders)
-- TWAP (Time-Weighted Average Price) execution
-- Smart order routing across multiple exchanges
-- Flash loan arbitrage detection
+- [x] Limit orders with market-order fallback (`SmartOrderRouter`)
+- [x] Iceberg / scaled entries across a price range
+- [x] TWAP (Time-Weighted Average Price) execution
+- [x] Execution analytics (slippage, fill time, maker/taker ratio) (`ExecutionAnalytics`)
+- [ ] Flash loan arbitrage detection
+- [ ] Smart order routing across multiple exchanges (live)
 
 ### Multi-Exchange Support
-- Add Binance US, Coinbase Pro, Kraken
-- Cross-exchange arbitrage detection
-- Exchange routing based on liquidity/fees
+- [x] `ExchangeManager` groundwork — register, route, aggregate balances
+- [x] Binance production support; Bybit and OKX stubs ready
+- [ ] Cross-exchange arbitrage detection
+- [ ] Live Bybit / OKX integration
 
-### Backtesting Improvements
-- Walk-forward analysis automation
-- Monte Carlo simulation for risk assessment
-- Out-of-sample validation framework
-- Regime-aware backtesting
+### Session-Aware Trading
+- [x] `SessionManager` — Asian, London, New York, weekend sessions
+- [x] Per-session position-size multipliers
+- [x] Preferred strategy style per session (mean reversion / breakout / momentum)
 
-### AI/ML Enhancements
-- Reinforcement learning for dynamic exits
-- LSTM/Transformer for price prediction
-- Anomaly detection (flash crashes, pump & dumps)
-- Natural language processing for news analysis
+### Sentiment Enhancements
+- [x] Fear & Greed Index integration (`FearGreedProvider`) — Alternative.me API
+- [x] Economic Calendar filter (`EconomicCalendarFilter`) — pause trading around high-impact events
+- [ ] Sentiment spike alerts
 
 ### Compliance & Reporting
-- Tax reporting (CSV export compatible with crypto tax software)
-- Trade journal with screenshots/notes
-- Performance attribution analysis
-- Regulatory compliance checks (pattern day trading, wash sales)
+- [x] Trade journal with full context (`TradeJournal`) — SQLite backed
+- [x] Koinly-compatible CSV export (`TaxExporter`)
+- [x] CoinTracker-compatible CSV export
+- [x] Daily / weekly / monthly performance reports (`PerformanceReportGenerator`)
+- [ ] Performance attribution analysis
+- [ ] Regulatory compliance checks (pattern day trading, wash sales)
+
+### AI/ML Enhancements
+- [ ] Reinforcement learning for dynamic exits
+- [ ] LSTM/Transformer for price prediction
+- [ ] Anomaly detection (flash crashes, pump & dumps)
+- [ ] Natural language processing for news analysis
+- [ ] Online learning for automatic model updates
 
 ### Infrastructure
-- Kubernetes deployment for production
-- Multi-region failover
-- Database sharding for high-frequency data
-- Real-time streaming dashboard (WebSocket)
+- [ ] Kubernetes deployment for production
+- [ ] Multi-region failover
+- [ ] Database sharding for high-frequency data
+- [ ] Real-time streaming dashboard (WebSocket)
 
 ---
 

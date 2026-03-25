@@ -61,10 +61,17 @@ class WebhookResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
     
-    status: str = Field(..., description="Service status")
+    status: str = Field(..., description="Service status: healthy | degraded")
     timestamp: datetime = Field(default_factory=datetime.now)
     version: str = Field(default="1.0.0")
     uptime_seconds: Optional[float] = Field(default=None)
+    # Extended fields
+    last_trade_time: Optional[str] = Field(default=None, description="ISO-8601 timestamp of last processed trade")
+    active_pairs: Optional[list] = Field(default=None, description="Currently active trading pairs")
+    model_status: Optional[str] = Field(default=None, description="ML model status: loaded | not_loaded")
+    sentiment_status: Optional[str] = Field(default=None, description="Sentiment pipeline status: ok | error | disabled")
+    webhook_accepting: Optional[bool] = Field(default=None, description="Whether the gateway is accepting webhooks")
+    execution_enabled: Optional[bool] = Field(default=None, description="Whether trade execution is enabled")
 
 
 class ValidationError(BaseModel):

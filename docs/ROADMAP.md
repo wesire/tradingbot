@@ -41,22 +41,22 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 **Goal**: Add machine learning model to enhance signal quality and reduce false positives
 
 **Deliverables**:
-- [ ] Feature engineering pipeline (technical indicators → ML features)
-- [ ] Train gradient boosting model (XGBoost/LightGBM) for signal classification
+- [x] Feature engineering pipeline (technical indicators → ML features)
+- [x] Train gradient boosting model (XGBoost/LightGBM) for signal classification
 - [ ] Implement online learning for model updates
-- [ ] Add model explainability (SHAP values)
+- [x] Add model explainability (SHAP values)
 - [ ] Create ML model backtesting framework
 - [ ] Deploy model as microservice (optional)
-- [ ] Add "ML confidence" to opportunities API
+- [x] Add "ML confidence" to opportunities API
 
 **Technical Tasks**:
-- Create `bot/ml/` module
-- Implement `FeatureEngineer` class
-- Train initial model on 6+ months of data
-- Create model versioning system
-- Add model performance monitoring
-- Integrate ML predictions into `OpportunityScorer`
-- Add ML explainability dashboard page
+- [x] Create `bot/ml/` module
+- [x] Implement `FeatureEngineer` class
+- [ ] Train initial model on 6+ months of data
+- [x] Create model versioning system
+- [x] Add model performance monitoring
+- [x] Integrate ML predictions into `OpportunityScorer`
+- [ ] Add ML explainability dashboard page
 
 **Success Criteria**:
 - ML model achieves >60% precision on signal classification
@@ -71,22 +71,23 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 **Goal**: Enable mobile notifications and remote bot control
 
 **Deliverables**:
-- [ ] Telegram bot for alerts and commands
-- [ ] Push notifications (iOS/Android) via Firebase
-- [ ] SMS alerts for critical events (Twilio)
-- [ ] Mobile-friendly dashboard (PWA)
+- [x] Telegram bot for alerts and commands
+- [ ] Push notifications (iOS/Android) via Firebase (deferred to follow-up PR)
+- [ ] SMS alerts for critical events (Twilio) (deferred to follow-up PR)
+- [ ] Mobile-friendly dashboard (PWA) (deferred to follow-up PR)
 - [ ] Remote emergency stop via mobile
 - [ ] Trade approval workflow (optional manual confirmation before live trades)
 
 **Technical Tasks**:
-- Create `bot/notifications/` module
-- Implement `TelegramNotifier` class
-- Set up Firebase Cloud Messaging
-- Integrate Twilio SMS API
-- Convert dashboard to PWA
-- Add authentication/authorization layer
-- Implement trade approval queue
-- Add 2FA for critical actions
+- [x] Create `bot/notifications/` module
+- [x] Implement `TelegramNotifier` class
+- [x] Implement `NotificationManager` (multi-channel routing, throttling)
+- [ ] Set up Firebase Cloud Messaging (deferred)
+- [ ] Integrate Twilio SMS API (deferred)
+- [ ] Convert dashboard to PWA (deferred)
+- [ ] Add authentication/authorization layer
+- [ ] Implement trade approval queue
+- [ ] Add 2FA for critical actions
 
 **Alert Types**:
 - Trade executed (entry/exit)

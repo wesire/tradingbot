@@ -2,7 +2,7 @@
 Opportunity scorer - scores and ranks potential trading opportunities.
 """
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 import logging
 
@@ -30,6 +30,11 @@ class Opportunity:
     # Additional context
     rationale: List[str]
     last_updated: str
+
+    # ML enrichment (populated when a SignalClassifier is loaded)
+    ml_confidence: Optional[float] = field(default=None)
+    ml_signal: Optional[str] = field(default=None)
+    ml_explanation: Optional[str] = field(default=None)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -45,6 +50,9 @@ class OpportunityScorer:
     - Regime alignment score (from regime filter)
     - Sentiment score (from sentiment pipeline)
     - Liquidity/volatility quality score (from ATR/volume)
+
+    Optionally enriches opportunities with ML signals when a
+    ``SignalClassifier`` and ``FeatureEngineer`` are provided.
     """
     
     def __init__(
@@ -52,7 +60,11 @@ class OpportunityScorer:
         technical_weight: float = 0.35,
         regime_weight: float = 0.30,
         sentiment_weight: float = 0.20,
-        liquidity_weight: float = 0.15
+        liquidity_weight: float = 0.15,
+        ml_classifier: Optional[Any] = None,
+        feature_engineer: Optional[Any] = None,
+        ml_explainer: Optional[Any] = None,
+        min_ml_confidence: float = 0.60,
     ):
         """
         Initialize opportunity scorer.
@@ -62,6 +74,12 @@ class OpportunityScorer:
             regime_weight: Weight for regime alignment (0-1)
             sentiment_weight: Weight for sentiment (0-1)
             liquidity_weight: Weight for liquidity/volatility (0-1)
+            ml_classifier: Optional fitted SignalClassifier instance.
+            feature_engineer: Optional FeatureEngineer used to build
+                the feature matrix fed to *ml_classifier*.
+            ml_explainer: Optional ModelExplainer for SHAP explanations.
+            min_ml_confidence: Minimum ML probability to include a
+                non-neutral ML signal.
         """
         # Normalize weights
         total = technical_weight + regime_weight + sentiment_weight + liquidity_weight
@@ -69,6 +87,12 @@ class OpportunityScorer:
         self.regime_weight = regime_weight / total
         self.sentiment_weight = sentiment_weight / total
         self.liquidity_weight = liquidity_weight / total
+
+        # ML components (all optional)
+        self.ml_classifier = ml_classifier
+        self.feature_engineer = feature_engineer
+        self.ml_explainer = ml_explainer
+        self.min_ml_confidence = min_ml_confidence
         
         logger.info(
             f"Initialized OpportunityScorer - weights: "
@@ -83,7 +107,8 @@ class OpportunityScorer:
         technical_data: Dict[str, Any],
         regime_data: Dict[str, Any],
         sentiment_data: Optional[Dict[str, Any]] = None,
-        liquidity_data: Optional[Dict[str, Any]] = None
+        liquidity_data: Optional[Dict[str, Any]] = None,
+        ohlcv_df: Optional[Any] = None,
     ) -> Optional[Opportunity]:
         """
         Score a single trading opportunity.
@@ -95,6 +120,7 @@ class OpportunityScorer:
             regime_data: Regime filter data
             sentiment_data: Optional sentiment data
             liquidity_data: Optional liquidity/volatility data
+            ohlcv_df: Optional OHLCV DataFrame used for ML feature generation.
             
         Returns:
             Opportunity object or None if no valid setup
@@ -135,6 +161,9 @@ class OpportunityScorer:
             tech_score, regime_score, sent_score, liq_score,
             technical_data, regime_data, sentiment_data
         )
+
+        # ML enrichment (optional – gracefully degraded when not configured)
+        ml_confidence, ml_signal, ml_explanation = self._ml_enrich(ohlcv_df)
         
         return Opportunity(
             pair=pair,
@@ -149,7 +178,10 @@ class OpportunityScorer:
             sentiment_score=sent_score,
             liquidity_score=liq_score,
             rationale=rationale,
-            last_updated=datetime.now(timezone.utc).isoformat()
+            last_updated=datetime.now(timezone.utc).isoformat(),
+            ml_confidence=ml_confidence,
+            ml_signal=ml_signal,
+            ml_explanation=ml_explanation,
         )
     
     def score_multiple(
@@ -398,3 +430,49 @@ class OpportunityScorer:
             rationale.append("Moderate setup with mixed factors")
         
         return rationale
+
+    def _ml_enrich(
+        self,
+        ohlcv_df: Optional[Any],
+    ) -> tuple:
+        """
+        Run ML inference and return (ml_confidence, ml_signal, ml_explanation).
+
+        Returns ``(None, None, None)`` when no ML components are configured
+        or when an error occurs (graceful degradation).
+        """
+        if (
+            self.ml_classifier is None
+            or self.feature_engineer is None
+            or ohlcv_df is None
+        ):
+            return None, None, None
+
+        try:
+            features = self.feature_engineer.transform(ohlcv_df)
+            if features.empty:
+                return None, None, None
+
+            ml_signal, ml_confidence = self.ml_classifier.predict(features)
+
+            # Build SHAP explanation if explainer is available
+            ml_explanation: Optional[str] = None
+            if self.ml_explainer is not None:
+                try:
+                    shap_vals = self.ml_explainer.explain_prediction(
+                        self.ml_classifier._model,
+                        features.iloc[[-1]],
+                    )
+                    ml_explanation = self.ml_explainer.format_explanation(
+                        shap_vals,
+                        self.feature_engineer.feature_names,
+                        top_n=3,
+                    )
+                except Exception as exc:
+                    logger.debug("SHAP explanation failed: %s", exc)
+
+            return float(ml_confidence), str(ml_signal), ml_explanation
+
+        except Exception as exc:
+            logger.warning("ML enrichment failed: %s", exc)
+            return None, None, None

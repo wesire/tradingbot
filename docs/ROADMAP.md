@@ -53,10 +53,10 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 - [x] Create `bot/ml/` module
 - [x] Implement `FeatureEngineer` class
 - [ ] Train initial model on 6+ months of data
-- [ ] Create model versioning system
+- [x] Create model versioning system
 - [x] Add model performance monitoring
 - [x] Integrate ML predictions into `OpportunityScorer`
-- [x] Add ML explainability dashboard page
+- [ ] Add ML explainability dashboard page
 
 **Success Criteria**:
 - ML model achieves >60% precision on signal classification
@@ -72,21 +72,22 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 
 **Deliverables**:
 - [x] Telegram bot for alerts and commands
-- [ ] Push notifications (iOS/Android) via Firebase (deferred)
-- [ ] SMS alerts for critical events via Twilio (deferred)
-- [x] Mobile-friendly dashboard (PWA with manifest, service worker, responsive layout)
+- [ ] Push notifications (iOS/Android) via Firebase (deferred to follow-up PR)
+- [ ] SMS alerts for critical events (Twilio) (deferred to follow-up PR)
+- [ ] Mobile-friendly dashboard (PWA) (deferred to follow-up PR)
 - [ ] Remote emergency stop via mobile
 - [x] Trade approval workflow (manual confirmation before live trades)
 
 **Technical Tasks**:
 - [x] Create `bot/notifications/` module
 - [x] Implement `TelegramNotifier` class
+- [x] Implement `NotificationManager` (multi-channel routing, throttling)
 - [ ] Set up Firebase Cloud Messaging (deferred)
 - [ ] Integrate Twilio SMS API (deferred)
-- [x] Convert dashboard to PWA
+- [ ] Convert dashboard to PWA (deferred)
 - [ ] Add authentication/authorization layer
-- [x] Implement trade approval queue (`bot/execution/trade_approval.py`)
-- [ ] Add 2FA for critical actions (deferred)
+- [ ] Implement trade approval queue
+- [ ] Add 2FA for critical actions
 
 **Alert Types**:
 - Trade executed (entry/exit)

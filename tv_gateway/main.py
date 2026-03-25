@@ -629,14 +629,60 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint."""
+    """
+    Health check endpoint.
+
+    Returns HTTP 200 when the service is healthy and HTTP 503 when degraded.
+    Degraded conditions:
+    - Circuit breaker is OPEN (too many consecutive failures to the bot)
+    """
+    from fastapi.responses import JSONResponse
+    from tv_gateway.circuit_breaker import CircuitState
+
     uptime = (datetime.now() - service_start_time).total_seconds()
-    
-    return HealthResponse(
-        status="healthy",
-        version="1.0.0",
-        uptime_seconds=uptime
+
+    # Determine degraded conditions
+    cb_open = circuit_breaker.state == CircuitState.OPEN
+    is_degraded = cb_open
+
+    # Last trade time: look up most recent alert in storage
+    last_trade: Optional[str] = None
+    try:
+        recent = alert_storage.get_recent_alerts(limit=1)
+        if recent:
+            last_trade = recent[0].received_at.isoformat() if hasattr(recent[0].received_at, 'isoformat') else str(recent[0].received_at)
+    except Exception:
+        pass
+
+    # Active pairs from config
+    active_pairs_raw = os.getenv("ENABLED_PAIRS", "BTC/USDT:USDT")
+    active_pairs = [p.strip() for p in active_pairs_raw.split(",") if p.strip()]
+
+    # ML model status
+    ml_model_path = os.getenv("ML_MODEL_PATH", "")
+    model_status = "loaded" if ml_model_path and os.path.exists(ml_model_path) else "not_loaded"
+
+    # Sentiment status
+    sentiment_status = "ok"
+    try:
+        sentiment_aggregator.get_cached_sentiment("BTC")
+    except Exception:
+        sentiment_status = "error"
+
+    body = HealthResponse(
+        status="degraded" if is_degraded else "healthy",
+        version="2.0.0",
+        uptime_seconds=uptime,
+        last_trade_time=last_trade,
+        active_pairs=active_pairs,
+        model_status=model_status,
+        sentiment_status=sentiment_status,
+        webhook_accepting=webhook_accepting,
+        execution_enabled=execution_enabled,
     )
+
+    http_status = 503 if is_degraded else 200
+    return JSONResponse(content=body.model_dump(mode="json"), status_code=http_status)
 
 
 @app.post("/tv/webhook", response_model=WebhookResponse)

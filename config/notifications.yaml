@@ -1,0 +1,23 @@
+# Notifications Configuration
+#
+# Configure alert channels and routing rules.
+# Credentials are read from environment variables – never commit tokens here.
+
+notifications:
+  enabled: true
+  throttle_minutes: 5           # Suppress duplicate alerts within this window
+
+  channels:
+    telegram:
+      enabled: true
+      # Credentials: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars
+
+  # Severity routing rules (all active channels receive alerts of any severity)
+  # Future: add sms, email, push for CRITICAL-only routing
+  severity_routing:
+    INFO:
+      - telegram
+    WARNING:
+      - telegram
+    CRITICAL:
+      - telegram

@@ -37,11 +37,7 @@ jobs:
           pip install pandas numpy pydantic pydantic-settings python-dotenv pyyaml loguru httpx aiohttp
           pip install fastapi uvicorn sqlalchemy aiosqlite python-multipart
           pip install cryptography python-jose[cryptography] schedule
-          pip install requests cachetools vaderSentiment ccxt websockets
-          pip install pydantic pydantic-settings python-dotenv pyyaml loguru httpx aiohttp
-          pip install fastapi uvicorn sqlalchemy aiosqlite python-multipart
-          pip install cryptography python-jose[cryptography] schedule
-          pip install types-requests types-cachetools pandas
+          pip install xgboost scikit-learn joblib
 
       - name: Lint with flake8
         run: |

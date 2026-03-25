@@ -1,0 +1,17 @@
+# ML Signal Enhancement Configuration
+#
+# Set enabled: true once a trained model is available.
+# All settings here can be overridden via environment variables
+# (ML_MODEL_PATH, etc.)
+
+ml:
+  enabled: false
+  model_path: "models/signal_classifier_latest.joblib"
+  min_confidence: 0.60          # Minimum ML confidence to enrich an opportunity
+  retrain_interval_days: 30     # How often to retrain the model (informational)
+  feature_engineer:
+    include_higher_tf: false    # Set to true if daily/weekly HTF data is available
+  monitoring:
+    log_path: "models/model_monitor.jsonl"
+    accuracy_threshold: 0.50    # Alert if rolling accuracy drops below this
+    window: 100                 # Number of recent predictions to track

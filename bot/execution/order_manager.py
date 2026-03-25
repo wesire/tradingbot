@@ -131,7 +131,9 @@ class Position:
     
     def is_open(self) -> bool:
         """Check if position is still open."""
-        return self.entry_order.status == OrderStatus.FILLED and self.closed_at is None
+        return self.entry_order.status in (
+            OrderStatus.OPEN, OrderStatus.PARTIAL, OrderStatus.FILLED
+        ) and self.closed_at is None
     
     def unrealized_pnl(self, current_price: float) -> float:
         """

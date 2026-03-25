@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 import sqlite3
+import threading
 import json
 import logging
 from pathlib import Path
@@ -76,11 +77,32 @@ class AlertStorage:
             db_path: Path to SQLite database file
         """
         self.db_path = db_path
+        # For in-memory databases, keep a persistent connection so the schema
+        # created in _init_database remains accessible to subsequent operations.
+        # A lock guards all operations on the shared connection.
+        self._lock = threading.Lock()
+        if db_path == ":memory:":
+            self._persistent_conn: Optional[sqlite3.Connection] = sqlite3.connect(
+                ":memory:", check_same_thread=False
+            )
+        else:
+            self._persistent_conn = None
         self._init_database()
-    
+
+    def _connect(self):
+        """Return (connection, should_close) pair.
+
+        For file-based databases a new connection is opened on each call (and
+        the caller is responsible for closing it).  For in-memory databases the
+        single persistent connection is returned and must *not* be closed.
+        """
+        if self._persistent_conn is not None:
+            return self._persistent_conn, False
+        return sqlite3.connect(self.db_path), True
+
     def _init_database(self):
         """Initialize database schema with migration support."""
-        conn = sqlite3.connect(self.db_path)
+        conn, should_close = self._connect()
         cursor = conn.cursor()
         
         # Check if old schema exists
@@ -104,7 +126,8 @@ class AlertStorage:
             self._create_schema(conn)
         
         conn.commit()
-        conn.close()
+        if should_close:
+            conn.close()
         logger.info(f"Alert storage initialized: {self.db_path}")
     
     def _create_schema(self, conn: sqlite3.Connection):
@@ -221,76 +244,77 @@ class AlertStorage:
             - alert_id: Database ID of alert (existing or new)
             - reason: None if new, "duplicate" if duplicate
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            # Check for duplicate using idempotency key
-            cursor.execute("""
-                SELECT id, status FROM alerts 
-                WHERE nonce = ? AND symbol = ? AND event_time = ?
-            """, (alert.nonce, alert.symbol, alert.event_time))
+        with self._lock:
+            conn, should_close = self._connect()
+            cursor = conn.cursor()
             
-            existing = cursor.fetchone()
-            
-            if existing:
-                alert_id, status = existing
+            try:
+                # Check for duplicate using idempotency key
+                cursor.execute("""
+                    SELECT id, status FROM alerts 
+                    WHERE nonce = ? AND symbol = ? AND event_time = ?
+                """, (alert.nonce, alert.symbol, alert.event_time))
+                
+                existing = cursor.fetchone()
+                
+                if existing:
+                    alert_id, status = existing
+                    logger.info(
+                        f"Duplicate alert detected: id={alert_id}, "
+                        f"nonce={alert.nonce}, status={status}"
+                    )
+                    return False, alert_id, "duplicate"
+                
+                # Insert new alert
+                cursor.execute("""
+                    INSERT INTO alerts (
+                        received_at, symbol, timeframe, side, setup_id,
+                        confidence, price, event_time, nonce,
+                        payload_json, validation_result, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    alert.received_at,
+                    alert.symbol,
+                    alert.timeframe,
+                    alert.side,
+                    alert.setup_id,
+                    alert.confidence,
+                    alert.price,
+                    alert.event_time,
+                    alert.nonce,
+                    alert.payload_json,
+                    alert.validation_result,
+                    alert.status
+                ))
+                
+                alert_id = cursor.lastrowid
+                conn.commit()
+                
                 logger.info(
-                    f"Duplicate alert detected: id={alert_id}, "
-                    f"nonce={alert.nonce}, status={status}"
+                    f"Stored new alert: id={alert_id}, symbol={alert.symbol}, "
+                    f"side={alert.side}, confidence={alert.confidence}"
                 )
-                conn.close()
+                
+                return True, alert_id, None
+                
+            except sqlite3.IntegrityError as e:
+                # Race condition - another request stored the same alert
+                logger.warning(f"Concurrent duplicate detected: {e}")
+                
+                # Fetch the existing alert
+                cursor.execute("""
+                    SELECT id FROM alerts 
+                    WHERE nonce = ? AND symbol = ? AND event_time = ?
+                """, (alert.nonce, alert.symbol, alert.event_time))
+                
+                existing = cursor.fetchone()
+                alert_id = existing[0] if existing else None
+                
                 return False, alert_id, "duplicate"
             
-            # Insert new alert
-            cursor.execute("""
-                INSERT INTO alerts (
-                    received_at, symbol, timeframe, side, setup_id,
-                    confidence, price, event_time, nonce,
-                    payload_json, validation_result, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                alert.received_at,
-                alert.symbol,
-                alert.timeframe,
-                alert.side,
-                alert.setup_id,
-                alert.confidence,
-                alert.price,
-                alert.event_time,
-                alert.nonce,
-                alert.payload_json,
-                alert.validation_result,
-                alert.status
-            ))
-            
-            alert_id = cursor.lastrowid
-            conn.commit()
-            
-            logger.info(
-                f"Stored new alert: id={alert_id}, symbol={alert.symbol}, "
-                f"side={alert.side}, confidence={alert.confidence}"
-            )
-            
-            return True, alert_id, None
-            
-        except sqlite3.IntegrityError as e:
-            # Race condition - another request stored the same alert
-            logger.warning(f"Concurrent duplicate detected: {e}")
-            
-            # Fetch the existing alert
-            cursor.execute("""
-                SELECT id FROM alerts 
-                WHERE nonce = ? AND symbol = ? AND event_time = ?
-            """, (alert.nonce, alert.symbol, alert.event_time))
-            
-            existing = cursor.fetchone()
-            alert_id = existing[0] if existing else None
-            
-            return False, alert_id, "duplicate"
-        
-        finally:
-            conn.close()
+            finally:
+                if should_close:
+                    conn.close()
     
     def update_status(
         self,
@@ -311,76 +335,80 @@ class AlertStorage:
         Returns:
             True if updated successfully
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            processed_at = datetime.now().isoformat() if status in [
-                AlertStatus.EXECUTED, AlertStatus.FAILED
-            ] else None
+        with self._lock:
+            conn, should_close = self._connect()
+            cursor = conn.cursor()
             
-            cursor.execute("""
-                UPDATE alerts 
-                SET status = ?, fail_reason = ?, execution_ref = ?, processed_at = ?
-                WHERE id = ?
-            """, (status, fail_reason, execution_ref, processed_at, alert_id))
+            try:
+                processed_at = datetime.now().isoformat() if status in [
+                    AlertStatus.EXECUTED, AlertStatus.FAILED
+                ] else None
+                
+                cursor.execute("""
+                    UPDATE alerts 
+                    SET status = ?, fail_reason = ?, execution_ref = ?, processed_at = ?
+                    WHERE id = ?
+                """, (status, fail_reason, execution_ref, processed_at, alert_id))
+                
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.info(
+                        f"Updated alert {alert_id}: status={status}, "
+                        f"reason={fail_reason}, ref={execution_ref}"
+                    )
+                    return True
+                else:
+                    logger.warning(f"Alert {alert_id} not found for update")
+                    return False
             
-            conn.commit()
-            
-            if cursor.rowcount > 0:
-                logger.info(
-                    f"Updated alert {alert_id}: status={status}, "
-                    f"reason={fail_reason}, ref={execution_ref}"
-                )
-                return True
-            else:
-                logger.warning(f"Alert {alert_id} not found for update")
-                return False
-        
-        finally:
-            conn.close()
+            finally:
+                if should_close:
+                    conn.close()
     
     def get_alert(self, alert_id: int) -> Optional[Alert]:
         """Get alert by ID."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("""
-                SELECT 
-                    id, received_at, symbol, timeframe, side, setup_id,
-                    confidence, price, event_time, nonce, payload_json,
-                    validation_result, status, fail_reason, execution_ref,
-                    processed_at
-                FROM alerts WHERE id = ?
-            """, (alert_id,))
+        with self._lock:
+            conn, should_close = self._connect()
+            cursor = conn.cursor()
             
-            row = cursor.fetchone()
+            try:
+                cursor.execute("""
+                    SELECT 
+                        id, received_at, symbol, timeframe, side, setup_id,
+                        confidence, price, event_time, nonce, payload_json,
+                        validation_result, status, fail_reason, execution_ref,
+                        processed_at
+                    FROM alerts WHERE id = ?
+                """, (alert_id,))
+                
+                row = cursor.fetchone()
+                
+                if row:
+                    return Alert(
+                        id=row[0],
+                        received_at=row[1],
+                        symbol=row[2],
+                        timeframe=row[3],
+                        side=row[4],
+                        setup_id=row[5],
+                        confidence=row[6],
+                        price=row[7],
+                        event_time=row[8],
+                        nonce=row[9],
+                        payload_json=row[10],
+                        validation_result=row[11],
+                        status=row[12],
+                        fail_reason=row[13],
+                        execution_ref=row[14],
+                        processed_at=row[15]
+                    )
+                
+                return None
             
-            if row:
-                return Alert(
-                    id=row[0],
-                    received_at=row[1],
-                    symbol=row[2],
-                    timeframe=row[3],
-                    side=row[4],
-                    setup_id=row[5],
-                    confidence=row[6],
-                    price=row[7],
-                    event_time=row[8],
-                    nonce=row[9],
-                    payload_json=row[10],
-                    validation_result=row[11],
-                    status=row[12],
-                    fail_reason=row[13],
-                    execution_ref=row[14],
-                    processed_at=row[15]
-                )
-            
-            return None
-        
-        finally:
-            conn.close()
+            finally:
+                if should_close:
+                    conn.close()
     
     def list_alerts(
         self,
@@ -399,144 +427,150 @@ class AlertStorage:
         Returns:
             List of alerts (newest first)
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            query = """
-                SELECT 
-                    id, received_at, symbol, timeframe, side, setup_id,
-                    confidence, price, event_time, nonce, payload_json,
-                    validation_result, status, fail_reason, execution_ref,
-                    processed_at
-                FROM alerts
-                WHERE 1=1
-            """
-            params = []
+        with self._lock:
+            conn, should_close = self._connect()
+            cursor = conn.cursor()
             
-            if status:
-                query += " AND status = ?"
-                params.append(status)
+            try:
+                query = """
+                    SELECT 
+                        id, received_at, symbol, timeframe, side, setup_id,
+                        confidence, price, event_time, nonce, payload_json,
+                        validation_result, status, fail_reason, execution_ref,
+                        processed_at
+                    FROM alerts
+                    WHERE 1=1
+                """
+                params = []
+                
+                if status:
+                    query += " AND status = ?"
+                    params.append(status)
+                
+                if symbol:
+                    query += " AND symbol = ?"
+                    params.append(symbol)
+                
+                query += " ORDER BY received_at DESC LIMIT ?"
+                params.append(limit)
+                
+                cursor.execute(query, params)
+                
+                alerts = []
+                for row in cursor.fetchall():
+                    alerts.append(Alert(
+                        id=row[0],
+                        received_at=row[1],
+                        symbol=row[2],
+                        timeframe=row[3],
+                        side=row[4],
+                        setup_id=row[5],
+                        confidence=row[6],
+                        price=row[7],
+                        event_time=row[8],
+                        nonce=row[9],
+                        payload_json=row[10],
+                        validation_result=row[11],
+                        status=row[12],
+                        fail_reason=row[13],
+                        execution_ref=row[14],
+                        processed_at=row[15]
+                    ))
+                
+                return alerts
             
-            if symbol:
-                query += " AND symbol = ?"
-                params.append(symbol)
-            
-            query += " ORDER BY received_at DESC LIMIT ?"
-            params.append(limit)
-            
-            cursor.execute(query, params)
-            
-            alerts = []
-            for row in cursor.fetchall():
-                alerts.append(Alert(
-                    id=row[0],
-                    received_at=row[1],
-                    symbol=row[2],
-                    timeframe=row[3],
-                    side=row[4],
-                    setup_id=row[5],
-                    confidence=row[6],
-                    price=row[7],
-                    event_time=row[8],
-                    nonce=row[9],
-                    payload_json=row[10],
-                    validation_result=row[11],
-                    status=row[12],
-                    fail_reason=row[13],
-                    execution_ref=row[14],
-                    processed_at=row[15]
-                ))
-            
-            return alerts
-        
-        finally:
-            conn.close()
+            finally:
+                if should_close:
+                    conn.close()
     
     def get_queued_alerts(self, limit: int = 10) -> List[Alert]:
         """Get alerts that need processing (accepted or queued status)."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("""
-                SELECT 
-                    id, received_at, symbol, timeframe, side, setup_id,
-                    confidence, price, event_time, nonce, payload_json,
-                    validation_result, status, fail_reason, execution_ref,
-                    processed_at
-                FROM alerts
-                WHERE status IN ('accepted', 'queued')
-                ORDER BY received_at ASC
-                LIMIT ?
-            """, (limit,))
+        with self._lock:
+            conn, should_close = self._connect()
+            cursor = conn.cursor()
             
-            alerts = []
-            for row in cursor.fetchall():
-                alerts.append(Alert(
-                    id=row[0],
-                    received_at=row[1],
-                    symbol=row[2],
-                    timeframe=row[3],
-                    side=row[4],
-                    setup_id=row[5],
-                    confidence=row[6],
-                    price=row[7],
-                    event_time=row[8],
-                    nonce=row[9],
-                    payload_json=row[10],
-                    validation_result=row[11],
-                    status=row[12],
-                    fail_reason=row[13],
-                    execution_ref=row[14],
-                    processed_at=row[15]
-                ))
+            try:
+                cursor.execute("""
+                    SELECT 
+                        id, received_at, symbol, timeframe, side, setup_id,
+                        confidence, price, event_time, nonce, payload_json,
+                        validation_result, status, fail_reason, execution_ref,
+                        processed_at
+                    FROM alerts
+                    WHERE status IN ('accepted', 'queued')
+                    ORDER BY received_at ASC
+                    LIMIT ?
+                """, (limit,))
+                
+                alerts = []
+                for row in cursor.fetchall():
+                    alerts.append(Alert(
+                        id=row[0],
+                        received_at=row[1],
+                        symbol=row[2],
+                        timeframe=row[3],
+                        side=row[4],
+                        setup_id=row[5],
+                        confidence=row[6],
+                        price=row[7],
+                        event_time=row[8],
+                        nonce=row[9],
+                        payload_json=row[10],
+                        validation_result=row[11],
+                        status=row[12],
+                        fail_reason=row[13],
+                        execution_ref=row[14],
+                        processed_at=row[15]
+                    ))
+                
+                return alerts
             
-            return alerts
-        
-        finally:
-            conn.close()
+            finally:
+                if should_close:
+                    conn.close()
     
     def get_stats(self) -> Dict[str, Any]:
         """Get alert statistics."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            # Count by status
-            cursor.execute("""
-                SELECT status, COUNT(*) 
-                FROM alerts 
-                GROUP BY status
-            """)
-            status_counts = {row[0]: row[1] for row in cursor.fetchall()}
+        with self._lock:
+            conn, should_close = self._connect()
+            cursor = conn.cursor()
             
-            # Total count
-            cursor.execute("SELECT COUNT(*) FROM alerts")
-            total_count = cursor.fetchone()[0]
+            try:
+                # Count by status
+                cursor.execute("""
+                    SELECT status, COUNT(*) 
+                    FROM alerts 
+                    GROUP BY status
+                """)
+                status_counts = {row[0]: row[1] for row in cursor.fetchall()}
+                
+                # Total count
+                cursor.execute("SELECT COUNT(*) FROM alerts")
+                total_count = cursor.fetchone()[0]
+                
+                # Last processed time
+                cursor.execute("""
+                    SELECT MAX(processed_at) 
+                    FROM alerts 
+                    WHERE processed_at IS NOT NULL
+                """)
+                last_processed = cursor.fetchone()[0]
+                
+                # Recent activity (last hour)
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM alerts 
+                    WHERE datetime(received_at) > datetime('now', '-1 hour')
+                """)
+                recent_count = cursor.fetchone()[0]
+                
+                return {
+                    "total_alerts": total_count,
+                    "by_status": status_counts,
+                    "last_processed_at": last_processed,
+                    "recent_count_1h": recent_count
+                }
             
-            # Last processed time
-            cursor.execute("""
-                SELECT MAX(processed_at) 
-                FROM alerts 
-                WHERE processed_at IS NOT NULL
-            """)
-            last_processed = cursor.fetchone()[0]
-            
-            # Recent activity (last hour)
-            cursor.execute("""
-                SELECT COUNT(*) 
-                FROM alerts 
-                WHERE datetime(received_at) > datetime('now', '-1 hour')
-            """)
-            recent_count = cursor.fetchone()[0]
-            
-            return {
-                "total_alerts": total_count,
-                "by_status": status_counts,
-                "last_processed_at": last_processed,
-                "recent_count_1h": recent_count
-            }
-        
-        finally:
-            conn.close()
+            finally:
+                if should_close:
+                    conn.close()

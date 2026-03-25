@@ -125,7 +125,7 @@ class SignalClassifier:
             self._model = GradientBoostingClassifier(**merged)
 
         logger.info(
-            "SignalClassifier initialised (backend=%s)",
+            "SignalClassifier initialized (backend=%s)",
             "xgboost" if _HAS_XGBOOST else "sklearn",
         )
 

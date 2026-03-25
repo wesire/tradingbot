@@ -671,7 +671,7 @@ async def health_check():
 
     body = HealthResponse(
         status="degraded" if is_degraded else "healthy",
-        version="2.0.0",
+        version="1.1.0",
         uptime_seconds=uptime,
         last_trade_time=last_trade,
         active_pairs=active_pairs,

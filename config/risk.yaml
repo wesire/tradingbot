@@ -40,3 +40,11 @@ per_pair_cooldowns:
   enabled: true
   min_time_between_trades_seconds: 300  # 5 minutes
   cooldown_after_loss_seconds: 600  # 10 minutes after a loss
+
+# Trade Approval Workflow (disabled by default — enable for manual confirmation)
+trade_approval:
+  enabled: false
+  timeout_seconds: 300
+  auto_action: "approve"   # approve | reject | none (wait indefinitely)
+  notify_channels:
+    - telegram

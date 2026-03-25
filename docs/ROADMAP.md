@@ -14,20 +14,20 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 
 **Deliverables**:
 - [x] Integrate CryptoPanic API for crypto news sentiment
-- [ ] Add Twitter/X sentiment analysis (deferred to follow-up PR)
+- [x] Add Twitter/X sentiment analysis (`TwitterSentimentProvider`)
 - [x] Implement Reddit sentiment scraper (r/CryptoCurrency, r/Bitcoin)
 - [x] Add weighted sentiment combining multiple sources
-- [ ] Create sentiment backtesting framework to validate predictive power
+- [x] Create sentiment backtesting framework to validate predictive power
 - [ ] Add sentiment alerts (e.g., "BTC sentiment spike detected")
 
 **Technical Tasks**:
 - [x] Create `CryptoPanicSentimentProvider` class
-- [ ] Create `TwitterSentimentProvider` class (deferred to follow-up PR)
+- [x] Create `TwitterSentimentProvider` class
 - [x] Create `RedditSentimentProvider` class
 - [x] Add API credentials to .env
 - [x] Implement rate limiting for API calls
 - [x] Add caching layer to reduce API costs
-- [ ] Update dashboard to show sentiment sources
+- [x] Update dashboard to show sentiment sources (SentimentWidget component)
 
 **Success Criteria**:
 - All 3 sentiment sources operational
@@ -41,22 +41,22 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 **Goal**: Add machine learning model to enhance signal quality and reduce false positives
 
 **Deliverables**:
-- [ ] Feature engineering pipeline (technical indicators → ML features)
-- [ ] Train gradient boosting model (XGBoost/LightGBM) for signal classification
+- [x] Feature engineering pipeline (technical indicators → ML features)
+- [x] Train gradient boosting model (XGBoost/LightGBM) for signal classification
 - [ ] Implement online learning for model updates
-- [ ] Add model explainability (SHAP values)
+- [x] Add model explainability (SHAP values)
 - [ ] Create ML model backtesting framework
 - [ ] Deploy model as microservice (optional)
-- [ ] Add "ML confidence" to opportunities API
+- [x] Add "ML confidence" to opportunities API
 
 **Technical Tasks**:
-- Create `bot/ml/` module
-- Implement `FeatureEngineer` class
-- Train initial model on 6+ months of data
-- Create model versioning system
-- Add model performance monitoring
-- Integrate ML predictions into `OpportunityScorer`
-- Add ML explainability dashboard page
+- [x] Create `bot/ml/` module
+- [x] Implement `FeatureEngineer` class
+- [ ] Train initial model on 6+ months of data
+- [ ] Create model versioning system
+- [x] Add model performance monitoring
+- [x] Integrate ML predictions into `OpportunityScorer`
+- [x] Add ML explainability dashboard page
 
 **Success Criteria**:
 - ML model achieves >60% precision on signal classification
@@ -71,22 +71,22 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 **Goal**: Enable mobile notifications and remote bot control
 
 **Deliverables**:
-- [ ] Telegram bot for alerts and commands
-- [ ] Push notifications (iOS/Android) via Firebase
-- [ ] SMS alerts for critical events (Twilio)
-- [ ] Mobile-friendly dashboard (PWA)
+- [x] Telegram bot for alerts and commands
+- [ ] Push notifications (iOS/Android) via Firebase (deferred)
+- [ ] SMS alerts for critical events via Twilio (deferred)
+- [x] Mobile-friendly dashboard (PWA with manifest, service worker, responsive layout)
 - [ ] Remote emergency stop via mobile
-- [ ] Trade approval workflow (optional manual confirmation before live trades)
+- [x] Trade approval workflow (manual confirmation before live trades)
 
 **Technical Tasks**:
-- Create `bot/notifications/` module
-- Implement `TelegramNotifier` class
-- Set up Firebase Cloud Messaging
-- Integrate Twilio SMS API
-- Convert dashboard to PWA
-- Add authentication/authorization layer
-- Implement trade approval queue
-- Add 2FA for critical actions
+- [x] Create `bot/notifications/` module
+- [x] Implement `TelegramNotifier` class
+- [ ] Set up Firebase Cloud Messaging (deferred)
+- [ ] Integrate Twilio SMS API (deferred)
+- [x] Convert dashboard to PWA
+- [ ] Add authentication/authorization layer
+- [x] Implement trade approval queue (`bot/execution/trade_approval.py`)
+- [ ] Add 2FA for critical actions (deferred)
 
 **Alert Types**:
 - Trade executed (entry/exit)
@@ -104,7 +104,12 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 
 ---
 
-## Future Enhancements (Post-Q3 2026)
+### Backtesting Improvements (completed)
+- [x] Walk-forward analysis (`bot/backtesting/walk_forward.py`)
+- [x] Monte Carlo simulation (`bot/backtesting/monte_carlo.py`)
+- [x] Sentiment backtesting framework (`bot/sentiment/backtester.py`)
+
+### Future Enhancements (Post-Q3 2026)
 
 ### Portfolio Optimization
 - Implement modern portfolio theory for position sizing

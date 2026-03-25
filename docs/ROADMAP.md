@@ -14,20 +14,20 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 
 **Deliverables**:
 - [x] Integrate CryptoPanic API for crypto news sentiment
-- [ ] Add Twitter/X sentiment analysis (deferred to follow-up PR)
+- [x] Add Twitter/X sentiment analysis (`TwitterSentimentProvider`)
 - [x] Implement Reddit sentiment scraper (r/CryptoCurrency, r/Bitcoin)
 - [x] Add weighted sentiment combining multiple sources
-- [ ] Create sentiment backtesting framework to validate predictive power
+- [x] Create sentiment backtesting framework to validate predictive power
 - [ ] Add sentiment alerts (e.g., "BTC sentiment spike detected")
 
 **Technical Tasks**:
 - [x] Create `CryptoPanicSentimentProvider` class
-- [ ] Create `TwitterSentimentProvider` class (deferred to follow-up PR)
+- [x] Create `TwitterSentimentProvider` class
 - [x] Create `RedditSentimentProvider` class
 - [x] Add API credentials to .env
 - [x] Implement rate limiting for API calls
 - [x] Add caching layer to reduce API costs
-- [ ] Update dashboard to show sentiment sources
+- [x] Update dashboard to show sentiment sources (SentimentWidget component)
 
 **Success Criteria**:
 - All 3 sentiment sources operational
@@ -76,7 +76,7 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 - [ ] SMS alerts for critical events (Twilio) (deferred to follow-up PR)
 - [ ] Mobile-friendly dashboard (PWA) (deferred to follow-up PR)
 - [ ] Remote emergency stop via mobile
-- [ ] Trade approval workflow (optional manual confirmation before live trades)
+- [x] Trade approval workflow (manual confirmation before live trades)
 
 **Technical Tasks**:
 - [x] Create `bot/notifications/` module
@@ -105,7 +105,12 @@ The bot has been upgraded from a single-pair dry-run system to a multi-pair, AI-
 
 ---
 
-## Future Enhancements (Post-Q3 2026)
+### Backtesting Improvements (completed)
+- [x] Walk-forward analysis (`bot/backtesting/walk_forward.py`)
+- [x] Monte Carlo simulation (`bot/backtesting/monte_carlo.py`)
+- [x] Sentiment backtesting framework (`bot/sentiment/backtester.py`)
+
+### Future Enhancements (Post-Q3 2026)
 
 ### Portfolio Optimization
 - Implement modern portfolio theory for position sizing

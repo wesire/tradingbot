@@ -35,3 +35,29 @@ global:
   default_timeframe: "5m"
   default_leverage_cap: 10
   validate_pairs_on_startup: true
+
+# Sentiment Provider Configuration
+sentiment:
+  providers:
+    cryptopanic:
+      enabled: true
+      weight: 0.40
+      cache_ttl_seconds: 900
+    reddit:
+      enabled: true
+      weight: 0.30
+      cache_ttl_seconds: 1800
+    twitter:
+      enabled: true
+      weight: 0.30
+      cache_ttl_seconds: 900
+
+# Backtesting Configuration
+backtesting:
+  sentiment_threshold: 0.30    # Minimum |sentiment| to enter a trade
+  walk_forward:
+    in_sample_bars: 180        # Bars in each in-sample window
+    out_sample_bars: 30        # Bars in each out-of-sample window
+  monte_carlo:
+    n_simulations: 1000
+    risk_of_ruin_threshold: 0.20

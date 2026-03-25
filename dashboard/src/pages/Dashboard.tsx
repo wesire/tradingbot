@@ -3,6 +3,7 @@ import { Activity, DollarSign, TrendingUp, Zap } from "lucide-react"
 import { StatusCard } from "@/components/StatusCard"
 import { TradeTable } from "@/components/TradeTable"
 import { PnLChart } from "@/components/PnLChart"
+import { SentimentWidget } from "@/components/SentimentWidget"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -118,8 +119,8 @@ export function Dashboard() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">Dashboard</h1>
+        <p className="text-muted-foreground text-sm lg:text-base">
           Real-time overview of your trading bot performance
         </p>
       </div>
@@ -160,6 +161,13 @@ export function Dashboard() {
           <PnLChart data={pnlData} />
         </CardContent>
       </Card>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          {/* placeholder for additional chart or info */}
+        </div>
+        <SentimentWidget />
+      </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>

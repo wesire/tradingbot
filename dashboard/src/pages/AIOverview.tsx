@@ -3,24 +3,36 @@ import { Brain, TrendingUp, AlertTriangle, Info, RefreshCw, AlertCircle } from "
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { SentimentHistoryChart } from "@/components/SentimentHistoryChart"
 import { apiClient } from "@/api/client"
-import type { AdvisoryOutput } from "@/api/client"
+import { useTimeframe } from "@/context/TimeframeContext"
+import type { AdvisoryOutput, SentimentHistoryPoint } from "@/api/client"
 
 const DEFAULT_PAIR = 'BTC/USDT:USDT'
 const REFRESH_INTERVAL_MS = 60_000
 
 export function AIOverview() {
+  const { timeframe } = useTimeframe()
   const [advisory, setAdvisory] = useState<AdvisoryOutput | null>(null)
   const [exchangeData, setExchangeData] = useState(false)
+  const [sentimentHistory, setSentimentHistory] = useState<SentimentHistoryPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
 
   const fetchAdvisory = useCallback(async () => {
     try {
-      const result = await apiClient.getAdvisory(DEFAULT_PAIR)
-      setAdvisory(result.advisory)
-      setExchangeData(result.exchange_data)
+      const [result, histResult] = await Promise.allSettled([
+        apiClient.getAdvisory(DEFAULT_PAIR, timeframe),
+        apiClient.getSentimentHistory('BTC', 24),
+      ])
+      if (result.status === 'fulfilled') {
+        setAdvisory(result.value.advisory)
+        setExchangeData(result.value.exchange_data)
+      }
+      if (histResult.status === 'fulfilled') {
+        setSentimentHistory(histResult.value.data)
+      }
       setError(null)
       setLastRefresh(new Date())
     } catch (err) {
@@ -29,7 +41,7 @@ export function AIOverview() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [timeframe])
 
   useEffect(() => {
     fetchAdvisory()
@@ -209,6 +221,16 @@ export function AIOverview() {
             <AlertTitle>Risk Disclaimer</AlertTitle>
             <AlertDescription>{advisory.disclaimer}</AlertDescription>
           </Alert>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Sentiment History — BTC (24h)</CardTitle>
+              <CardDescription>Aggregated sentiment score over the last 24 hours</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <SentimentHistoryChart data={sentimentHistory} />
+            </CardContent>
+          </Card>
         </>
       )}
     </div>

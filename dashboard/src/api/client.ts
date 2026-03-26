@@ -216,6 +216,65 @@ export interface BacktestRequest {
   timeframe?: string;
 }
 
+export interface OHLCVCandle {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface OHLCVResponse {
+  pair: string;
+  timeframe: string;
+  count: number;
+  candles: OHLCVCandle[];
+  is_demo: boolean;
+}
+
+export interface EquityPoint {
+  equity: number;
+  ts: string;
+}
+
+export interface PerformanceMetrics {
+  total_trades: number;
+  win_rate: number;
+  profit_factor: number;
+  total_pnl: number;
+  max_drawdown: number;
+  sharpe_ratio?: number;
+}
+
+export interface PerformanceReport {
+  period: string;
+  generated_at: string;
+  is_demo: boolean;
+  metrics: PerformanceMetrics;
+  per_pair: Record<string, PerformanceMetrics>;
+  equity_curve: EquityPoint[];
+}
+
+export interface CorrelationResponse {
+  pairs: string[];
+  matrix: Record<string, Record<string, number>>;
+  lookback_days: number;
+  is_demo: boolean;
+}
+
+export interface SentimentHistoryPoint {
+  timestamp: string;
+  score: number;
+}
+
+export interface SentimentHistoryResponse {
+  asset: string;
+  hours: number;
+  data: SentimentHistoryPoint[];
+  is_demo: boolean;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -263,8 +322,8 @@ class ApiClient {
     }));
   }
 
-  async getOpportunities(): Promise<Opportunity[]> {
-    const data = await this.request<{ success: boolean; opportunities: Opportunity[] }>('/api/opportunities');
+  async getOpportunities(timeframe = '5m'): Promise<Opportunity[]> {
+    const data = await this.request<{ success: boolean; opportunities: Opportunity[] }>(`/api/opportunities?timeframe=${timeframe}`);
     return data.opportunities ?? [];
   }
 
@@ -330,6 +389,23 @@ class ApiClient {
 
   async getRecentMLPredictions(limit = 50): Promise<MLRecentPredictions> {
     return this.request<MLRecentPredictions>(`/api/ml/predictions/recent?limit=${limit}`);
+  }
+
+  async getOHLCV(pair: string, timeframe = '5m', limit = 200): Promise<OHLCVResponse> {
+    const encodedPair = encodeURIComponent(pair);
+    return this.request<OHLCVResponse>(`/api/ohlcv/${encodedPair}?timeframe=${timeframe}&limit=${limit}`);
+  }
+
+  async getPerformanceReport(period = '30d'): Promise<PerformanceReport> {
+    return this.request<PerformanceReport>(`/api/performance/report?period=${period}`);
+  }
+
+  async getCorrelations(lookbackDays = 30): Promise<CorrelationResponse> {
+    return this.request<CorrelationResponse>(`/api/portfolio/correlations?lookback_days=${lookbackDays}`);
+  }
+
+  async getSentimentHistory(asset: string, hours = 24): Promise<SentimentHistoryResponse> {
+    return this.request<SentimentHistoryResponse>(`/api/sentiment/history?asset=${encodeURIComponent(asset)}&hours=${hours}`);
   }
 }
 

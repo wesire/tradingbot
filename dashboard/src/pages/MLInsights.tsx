@@ -10,6 +10,9 @@ import {
   LineChart, Line,
 } from 'recharts'
 import { apiClient } from '@/api/client'
+import { CorrelationHeatmap } from '@/components/CorrelationHeatmap'
+import { WinLossDistribution } from '@/components/WinLossDistribution'
+import { useTimeframe } from '@/context/TimeframeContext'
 import type {
   MLModelStatus,
   MLFeatureImportance,
@@ -18,6 +21,7 @@ import type {
   MLFeature,
   RollingAccuracy,
   MLPrediction,
+  CorrelationResponse,
 } from '@/api/client'
 
 // ---------------------------------------------------------------------------
@@ -62,10 +66,12 @@ const CHART_STYLE = {
 // ---------------------------------------------------------------------------
 
 export function MLInsights() {
+  const { timeframe } = useTimeframe()
   const [modelStatus, setModelStatus] = useState<MLModelStatus | null>(null)
   const [featureImportance, setFeatureImportance] = useState<MLFeatureImportance | null>(null)
   const [backtestMetrics, setBacktestMetrics] = useState<MLBacktestMetrics | null>(null)
   const [predictions, setPredictions] = useState<MLRecentPredictions | null>(null)
+  const [correlations, setCorrelations] = useState<CorrelationResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [backtestLoading, setBacktestLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -73,14 +79,16 @@ export function MLInsights() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [status, importance, preds] = await Promise.all([
+      const [status, importance, preds, corrResult] = await Promise.all([
         apiClient.getMLStatus(),
         apiClient.getMLFeatureImportance(),
         apiClient.getRecentMLPredictions(20),
+        apiClient.getCorrelations(30),
       ])
       setModelStatus(status)
       setFeatureImportance(importance)
       setPredictions(preds)
+      setCorrelations(corrResult)
       setError(null)
       setLastRefresh(new Date())
     } catch (err) {
@@ -98,7 +106,7 @@ export function MLInsights() {
         start_date: '2025-01-01',
         end_date: new Date().toISOString().slice(0, 10),
         pair: 'BTC/USDT:USDT',
-        timeframe: '5m',
+        timeframe,
       })
       if (result.success) {
         setBacktestMetrics(result.metrics)
@@ -108,7 +116,7 @@ export function MLInsights() {
     } finally {
       setBacktestLoading(false)
     }
-  }, [])
+  }, [timeframe])
 
   useEffect(() => {
     fetchData()
@@ -435,6 +443,33 @@ export function MLInsights() {
             </ResponsiveContainer>
           </CardContent>
         </Card>
+
+        {/* Win/Loss Distribution */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base lg:text-lg">Win/Loss Distribution</CardTitle>
+            <CardDescription>Trade outcome distribution by confidence bucket</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <WinLossDistribution predictions={predictions?.predictions ?? []} />
+          </CardContent>
+        </Card>
+
+        {/* Correlation Heatmap */}
+        {correlations && correlations.pairs.length >= 2 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base lg:text-lg">Pair Correlation Matrix</CardTitle>
+              <CardDescription>
+                {correlations.lookback_days}-day rolling Pearson correlation
+                {correlations.is_demo ? ' (demo)' : ''}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <CorrelationHeatmap data={correlations} />
+            </CardContent>
+          </Card>
+        )}
 
         {/* Recent Predictions */}
         <Card>

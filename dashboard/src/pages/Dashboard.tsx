@@ -5,23 +5,31 @@ import { TradeTable } from "@/components/TradeTable"
 import { PnLChart } from "@/components/PnLChart"
 import { SentimentWidget } from "@/components/SentimentWidget"
 import { ConnectionStatus } from "@/components/ConnectionStatus"
+import { CandlestickChart } from "@/components/CandlestickChart"
+import { EquityCurve } from "@/components/EquityCurve"
+import { DrawdownChart } from "@/components/DrawdownChart"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { apiClient } from "@/api/client"
 import { useWebSocket } from "@/hooks/useWebSocket"
-import type { BotStatus, Position, Trade, PnLData } from "@/api/client"
+import { useTimeframe } from "@/context/TimeframeContext"
+import type { BotStatus, Position, Trade, PnLData, OHLCVCandle, EquityPoint } from "@/api/client"
 
 const HTTP_POLL_FALLBACK_INTERVAL_MS = 30_000 // 30-second fallback HTTP polling when WebSocket unavailable
 const WS_CHANNELS = ["positions", "trades", "status", "alerts"]
+const DEFAULT_PAIR = 'BTC/USDT:USDT'
 
 export function Dashboard() {
+  const { timeframe } = useTimeframe()
   const [status, setStatus] = useState<BotStatus | null>(null)
   const [positions, setPositions] = useState<Position[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
   const [tradesSource, setTradesSource] = useState<'exchange' | 'alerts' | undefined>(undefined)
   const [pnlData, setPnlData] = useState<PnLData[]>([])
+  const [candles, setCandles] = useState<OHLCVCandle[]>([])
+  const [equityCurve, setEquityCurve] = useState<EquityPoint[]>([])
   const [activeTab, setActiveTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -72,11 +80,13 @@ export function Dashboard() {
   // HTTP polling fallback — always runs for initial load; continues at 30s
   const fetchData = useCallback(async () => {
     try {
-      const [statusData, positionsData, tradesData, pnlDataResult] = await Promise.allSettled([
+      const [statusData, positionsData, tradesData, pnlDataResult, ohlcvResult, equityResult] = await Promise.allSettled([
         apiClient.getBotStatus(),
         apiClient.getPositions(),
         apiClient.getTrades(50),
         apiClient.getPnLHistory('24h'),
+        apiClient.getOHLCV(DEFAULT_PAIR, timeframe, 100),
+        apiClient.getPerformanceReport('30d'),
       ])
 
       if (statusData.status === 'fulfilled') setStatus(statusData.value)
@@ -92,6 +102,8 @@ export function Dashboard() {
         }
       }
       if (pnlDataResult.status === 'fulfilled') setPnlData(pnlDataResult.value)
+      if (ohlcvResult.status === 'fulfilled') setCandles(ohlcvResult.value.candles)
+      if (equityResult.status === 'fulfilled') setEquityCurve(equityResult.value.equity_curve)
 
       setError(null)
       setLastRefresh(new Date())
@@ -101,7 +113,7 @@ export function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [wsConnected])
+  }, [wsConnected, timeframe])
 
   useEffect(() => {
     fetchData()
@@ -184,6 +196,37 @@ export function Dashboard() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Price Chart — {DEFAULT_PAIR}</CardTitle>
+          <CardDescription>OHLCV candlestick with volume ({timeframe} timeframe)</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CandlestickChart candles={candles} height={360} />
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Equity Curve</CardTitle>
+            <CardDescription>Account equity over the last 30 days</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <EquityCurve data={equityCurve} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Drawdown</CardTitle>
+            <CardDescription>Peak-to-trough drawdown over time</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DrawdownChart data={equityCurve} />
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
           <CardTitle>P&L Chart</CardTitle>
           <CardDescription>24-hour profit and loss tracking</CardDescription>
         </CardHeader>
@@ -198,7 +241,6 @@ export function Dashboard() {
         </div>
         <SentimentWidget />
       </div>
-
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview" active={activeTab === 'overview'}>

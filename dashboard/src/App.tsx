@@ -7,6 +7,8 @@ import { AIOverview } from '@/pages/AIOverview'
 import { Opportunities } from '@/pages/Opportunities'
 import { MLInsights } from '@/pages/MLInsights'
 import { cn } from '@/lib/utils'
+import { TimeframeProvider, useTimeframe, TIMEFRAMES } from '@/context/TimeframeContext'
+import type { Timeframe } from '@/context/TimeframeContext'
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -73,6 +75,28 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
   )
 }
 
+function TimeframePicker() {
+  const { timeframe, setTimeframe } = useTimeframe()
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      {TIMEFRAMES.map(tf => (
+        <button
+          key={tf}
+          onClick={() => setTimeframe(tf as Timeframe)}
+          className={cn(
+            "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+            timeframe === tf
+              ? "bg-primary text-primary-foreground"
+              : "bg-secondary text-secondary-foreground hover:bg-accent"
+          )}
+        >
+          {tf}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -113,6 +137,12 @@ function Layout() {
           </div>
         </header>
 
+        {/* Desktop timeframe bar */}
+        <div className="hidden lg:flex h-10 items-center border-b bg-card/50 px-6 gap-3 shrink-0">
+          <span className="text-xs text-muted-foreground font-medium">Timeframe:</span>
+          <TimeframePicker />
+        </div>
+
         <main className="flex-1 overflow-auto">
           <div className="container mx-auto p-4 lg:p-6">
             <Routes>
@@ -132,7 +162,9 @@ function Layout() {
 function App() {
   return (
     <BrowserRouter>
-      <Layout />
+      <TimeframeProvider>
+        <Layout />
+      </TimeframeProvider>
     </BrowserRouter>
   )
 }

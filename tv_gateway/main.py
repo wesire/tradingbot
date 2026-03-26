@@ -1967,11 +1967,62 @@ async def get_opportunities(
         # Limit results
         opportunities = opportunities[:max_results]
         
+        def _opp_to_api(opp, idx: int) -> dict:
+            """Convert Opportunity dataclass to frontend-compatible dict."""
+            d = opp.to_dict()
+            current_price = d.get("entry_zone", "")
+            # Parse entry_zone string e.g. "44800.0000-45300.0000"
+            entry_price = 0.0
+            try:
+                parts = str(current_price).split("-")
+                if len(parts) >= 2:
+                    entry_price = (float(parts[0]) + float(parts[1])) / 2
+                elif len(parts) == 1 and parts[0]:
+                    entry_price = float(parts[0])
+            except (ValueError, IndexError):
+                pass
+
+            # Parse invalidation as stop_loss
+            stop_loss = 0.0
+            try:
+                stop_loss = float(d.get("invalidation", 0) or 0)
+            except (ValueError, TypeError):
+                pass
+
+            # Derive take_profit from entry and risk_reward
+            rr = float(d.get("risk_reward", 2.0) or 2.0)
+            take_profit = 0.0
+            if entry_price > 0 and stop_loss > 0:
+                risk = abs(entry_price - stop_loss)
+                if opp.side == "long":
+                    take_profit = entry_price + risk * rr
+                else:
+                    take_profit = entry_price - risk * rr
+
+            rationale_list = d.get("rationale", [])
+            ai_rationale = ". ".join(rationale_list) if rationale_list else None
+
+            return {
+                "id": f"{d.get('pair', '')}-{idx}",
+                "symbol": d.get("pair", ""),
+                "side": d.get("side", "long"),
+                "confidence": d.get("confidence", 0.0),
+                "entry_price": round(entry_price, 4),
+                "stop_loss": round(stop_loss, 4),
+                "take_profit": round(take_profit, 4),
+                "risk_reward": d.get("risk_reward", 2.0),
+                "ai_rationale": ai_rationale,
+                "timeframe": d.get("timeframe", timeframe),
+                "technical_score": d.get("technical_score", 0.0),
+                "regime_score": d.get("regime_score", 0.0),
+                "sentiment_score": d.get("sentiment_score", 0.0),
+            }
+
         return {
             "success": True,
             "count": len(opportunities),
             "exchange_data": broker_adapter is not None,
-            "opportunities": [o.to_dict() for o in opportunities],
+            "opportunities": [_opp_to_api(o, i) for i, o in enumerate(opportunities)],
             "filters": {
                 "min_confidence": min_confidence,
                 "side": side,
@@ -2262,6 +2313,302 @@ async def get_recent_ml_predictions(limit: int = 50):
 
     # Real model: placeholder – extend with a live prediction log if available
     return {"predictions": [], "total": 0, "is_demo": False}
+
+
+# ---------------------------------------------------------------------------
+# Status endpoint (machine-readable)
+# ---------------------------------------------------------------------------
+
+@app.get("/status")
+async def get_status():
+    """Simple machine-readable status endpoint."""
+    return {"status": "running"}
+
+
+# ---------------------------------------------------------------------------
+# OHLCV endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/ohlcv/{pair:path}")
+async def get_ohlcv(pair: str, timeframe: str = "5m", limit: int = 200):
+    """
+    Fetch OHLCV candlestick data for a trading pair.
+
+    Args:
+        pair: Trading pair symbol (e.g. BTC/USDT:USDT)
+        timeframe: Candle timeframe (e.g. 1m, 5m, 1h)
+        limit: Number of candles to return (max 500)
+
+    Returns:
+        OHLCV candle data
+    """
+    limit = min(limit, 500)
+    try:
+        if broker_adapter is not None:
+            raw = broker_adapter.fetch_ohlcv(pair, timeframe=timeframe, limit=limit)
+            candles = [
+                {
+                    "timestamp": c[0],
+                    "open": c[1],
+                    "high": c[2],
+                    "low": c[3],
+                    "close": c[4],
+                    "volume": c[5],
+                }
+                for c in raw
+            ]
+        else:
+            # Demo data when no exchange is connected
+            import random as _random
+            rng = _random.Random(42)
+            now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+            interval_ms = _timeframe_to_ms(timeframe)
+            base = 45000.0
+            candles = []
+            for i in range(limit):
+                ts = now_ts - (limit - i) * interval_ms
+                o = base + rng.uniform(-200, 200)
+                h = o + rng.uniform(0, 300)
+                lo = o - rng.uniform(0, 300)
+                c = lo + rng.uniform(0, h - lo)
+                candles.append({
+                    "timestamp": ts,
+                    "open": round(o, 2),
+                    "high": round(h, 2),
+                    "low": round(lo, 2),
+                    "close": round(c, 2),
+                    "volume": round(rng.uniform(100, 1000), 2),
+                })
+                base = c
+
+        return {
+            "pair": pair,
+            "timeframe": timeframe,
+            "count": len(candles),
+            "candles": candles,
+            "is_demo": broker_adapter is None,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching OHLCV for {pair}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+def _timeframe_to_ms(tf: str) -> int:
+    """Convert a timeframe string to milliseconds."""
+    _map = {
+        "1m": 60_000, "3m": 180_000, "5m": 300_000,
+        "15m": 900_000, "30m": 1_800_000,
+        "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000,
+        "6h": 21_600_000, "12h": 43_200_000,
+        "1d": 86_400_000, "1w": 604_800_000, "1M": 2_592_000_000,
+    }
+    return _map.get(tf, 300_000)
+
+
+# ---------------------------------------------------------------------------
+# Performance report endpoint
+# ---------------------------------------------------------------------------
+
+# Lazy singleton for PerformanceTracker
+_performance_tracker = None
+
+
+def _get_performance_tracker():
+    global _performance_tracker
+    if _performance_tracker is None:
+        try:
+            from bot.portfolio.performance_tracker import PerformanceTracker
+            db_path = os.getenv("PERFORMANCE_DB_PATH", "/app/data/performance.db")
+            _performance_tracker = PerformanceTracker(db_path=db_path)
+        except Exception as exc:
+            logger.warning("Could not initialise PerformanceTracker: %s", exc)
+    return _performance_tracker
+
+
+@app.get("/api/performance/report")
+async def get_performance_report(period: str = "30d"):
+    """
+    Return a comprehensive performance report including equity curve.
+
+    Args:
+        period: Period string e.g. 7d, 30d, 90d, all
+
+    Returns:
+        Metrics, equity curve, and per-pair breakdown
+    """
+    try:
+        tracker = _get_performance_tracker()
+        if tracker is None:
+            # Return demo data when tracker unavailable
+            import random as _random
+            rng = _random.Random(42)
+            now = datetime.now(timezone.utc)
+            equity = 10000.0
+            equity_curve = []
+            for i in range(30):
+                ts = (now - timedelta(days=29 - i)).isoformat()
+                equity = equity * (1 + rng.uniform(-0.02, 0.025))
+                equity_curve.append({"equity": round(equity, 2), "ts": ts})
+            return {
+                "period": period,
+                "generated_at": now.isoformat(),
+                "is_demo": True,
+                "metrics": {
+                    "total_trades": 0,
+                    "win_rate": 0.0,
+                    "profit_factor": 0.0,
+                    "total_pnl": 0.0,
+                    "max_drawdown": 0.0,
+                    "sharpe_ratio": 0.0,
+                },
+                "per_pair": {},
+                "equity_curve": equity_curve,
+            }
+        report = tracker.get_performance_report(period=period)
+        report["is_demo"] = False
+        return report
+    except Exception as e:
+        logger.error(f"Error getting performance report: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+# ---------------------------------------------------------------------------
+# Correlation matrix endpoint
+# ---------------------------------------------------------------------------
+
+# Lazy singleton for CorrelationManager
+_correlation_manager = None
+
+
+def _get_correlation_manager():
+    global _correlation_manager
+    if _correlation_manager is None:
+        try:
+            from bot.portfolio.correlation_manager import CorrelationManager
+            _correlation_manager = CorrelationManager()
+        except Exception as exc:
+            logger.warning("Could not initialise CorrelationManager: %s", exc)
+    return _correlation_manager
+
+
+@app.get("/api/portfolio/correlations")
+async def get_portfolio_correlations(lookback_days: int = 30):
+    """
+    Return the pairwise correlation matrix for tracked pairs.
+
+    Args:
+        lookback_days: Number of days of data to use
+
+    Returns:
+        Correlation matrix as a nested dict and list of pairs
+    """
+    try:
+        manager = _get_correlation_manager()
+        pairs = registry.list_enabled_pairs()
+
+        if manager is not None and broker_adapter is not None:
+            # Feed recent close prices into the correlation manager
+            for pair in pairs:
+                try:
+                    raw = broker_adapter.fetch_ohlcv(pair, timeframe="1d", limit=lookback_days + 5)
+                    if raw:
+                        import pandas as _pd
+                        closes = _pd.Series(
+                            [c[4] for c in raw],
+                            index=_pd.to_datetime([c[0] for c in raw], unit="ms", utc=True),
+                        )
+                        manager.update_prices(pair, closes)
+                except Exception as pe:
+                    logger.debug(f"Correlation: could not fetch prices for {pair}: {pe}")
+
+            corr_df = manager.get_correlation_matrix(lookback_days=lookback_days)
+            if not corr_df.empty:
+                matrix = corr_df.to_dict()
+                return {
+                    "pairs": list(corr_df.columns),
+                    "matrix": matrix,
+                    "lookback_days": lookback_days,
+                    "is_demo": False,
+                }
+
+        # Demo / fallback: synthetic correlation data
+        import random as _random
+        rng = _random.Random(42)
+        demo_pairs = pairs[:4] if len(pairs) >= 2 else ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+        matrix: dict = {}
+        for p1 in demo_pairs:
+            matrix[p1] = {}
+            for p2 in demo_pairs:
+                if p1 == p2:
+                    matrix[p1][p2] = 1.0
+                else:
+                    matrix[p1][p2] = round(rng.uniform(0.4, 0.9), 3)
+        return {
+            "pairs": demo_pairs,
+            "matrix": matrix,
+            "lookback_days": lookback_days,
+            "is_demo": True,
+        }
+    except Exception as e:
+        logger.error(f"Error getting correlations: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sentiment history endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/sentiment/history")
+async def get_sentiment_history(asset: str = "BTC", hours: int = 24):
+    """
+    Return historical sentiment scores for an asset.
+
+    Args:
+        asset: Asset symbol (e.g. BTC, ETH)
+        hours: Number of hours of history
+
+    Returns:
+        List of {timestamp, score} data points
+    """
+    try:
+        # Try to load from SentimentStorage if available
+        history = []
+        try:
+            db_path = os.getenv("SENTIMENT_DB_PATH", "/app/data/sentiment.db")
+            storage = SentimentStorage(db_path=db_path)
+            raw = storage.get_history(asset.upper(), hours=hours)
+            history = [{"timestamp": r["timestamp"], "score": r["score"]} for r in raw]
+        except Exception:
+            pass
+
+        if not history:
+            # Demo data
+            import random as _random
+            rng = _random.Random(ord(asset[0]) if asset else 42)
+            now = datetime.now(timezone.utc)
+            score = rng.uniform(-0.3, 0.3)
+            for i in range(hours):
+                ts = (now - timedelta(hours=hours - i)).isoformat()
+                score = max(-1.0, min(1.0, score + rng.uniform(-0.1, 0.1)))
+                history.append({"timestamp": ts, "score": round(score, 3)})
+            return {"asset": asset.upper(), "hours": hours, "data": history, "is_demo": True}
+
+        return {"asset": asset.upper(), "hours": hours, "data": history, "is_demo": False}
+    except Exception as e:
+        logger.error(f"Error getting sentiment history: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
 
 
 @app.exception_handler(Exception)

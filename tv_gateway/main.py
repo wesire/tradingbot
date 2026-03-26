@@ -8,6 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from contextlib import asynccontextmanager
 import os
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # loads .env from working directory if present (e.g. /app/.env in Docker)
+except ImportError:
+    pass  # python-dotenv not installed, rely on container env vars
 from datetime import datetime
 import json
 import sqlite3

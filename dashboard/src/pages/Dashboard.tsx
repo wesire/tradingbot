@@ -17,6 +17,7 @@ export function Dashboard() {
   const [status, setStatus] = useState<BotStatus | null>(null)
   const [positions, setPositions] = useState<Position[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
+  const [tradesSource, setTradesSource] = useState<'exchange' | 'alerts' | undefined>(undefined)
   const [pnlData, setPnlData] = useState<PnLData[]>([])
   const [activeTab, setActiveTab] = useState('overview')
   const [loading, setLoading] = useState(true)
@@ -34,7 +35,13 @@ export function Dashboard() {
 
       if (statusData.status === 'fulfilled') setStatus(statusData.value)
       if (positionsData.status === 'fulfilled') setPositions(positionsData.value)
-      if (tradesData.status === 'fulfilled') setTrades(tradesData.value)
+      if (tradesData.status === 'fulfilled') {
+        const result = tradesData.value as Trade[] & { _source?: 'exchange' | 'alerts' }
+        setTrades(result)
+        if (result.length > 0 && result[0].source) {
+          setTradesSource(result[0].source)
+        }
+      }
       if (pnlDataResult.status === 'fulfilled') setPnlData(pnlDataResult.value)
 
       setError(null)
@@ -153,7 +160,7 @@ export function Dashboard() {
               <CardDescription>Latest trades and positions</CardDescription>
             </CardHeader>
             <CardContent>
-              <TradeTable trades={trades.slice(0, 5)} />
+              <TradeTable trades={trades.slice(0, 5)} loading={loading} source={tradesSource} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -162,7 +169,7 @@ export function Dashboard() {
           <Card>
             <CardHeader>
               <CardTitle>Open Positions</CardTitle>
-              <CardDescription>Current market positions</CardDescription>
+              <CardDescription>Current market positions from the exchange</CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
@@ -178,10 +185,16 @@ export function Dashboard() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {positions.length === 0 ? (
+                  {loading ? (
                     <TableRow>
                       <TableCell colSpan={7} className="text-center text-muted-foreground">
-                        {loading ? 'Loading positions…' : 'No open positions'}
+                        Loading positions…
+                      </TableCell>
+                    </TableRow>
+                  ) : positions.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                        No open positions — active exchange positions will appear here.
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -218,11 +231,7 @@ export function Dashboard() {
               <CardDescription>All executed trades</CardDescription>
             </CardHeader>
             <CardContent>
-              {loading ? (
-                <p className="text-center text-muted-foreground py-4">Loading trades…</p>
-              ) : (
-                <TradeTable trades={trades} />
-              )}
+              <TradeTable trades={trades} loading={loading} source={tradesSource} />
             </CardContent>
           </Card>
         </TabsContent>

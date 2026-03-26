@@ -79,8 +79,6 @@ services:
     restart: unless-stopped
     ports:
       - "${DASHBOARD_PORT:-3000}:80"
-    environment:
-      - VITE_API_URL=http://webhook:8000
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/health"]
       interval: 30s

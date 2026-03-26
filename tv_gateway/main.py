@@ -763,6 +763,7 @@ async def health_check():
         sentiment_status=sentiment_status,
         webhook_accepting=webhook_accepting,
         execution_enabled=execution_enabled,
+        exchange_connected=broker_adapter is not None,
     )
 
     http_status = 503 if is_degraded else 200
@@ -1263,45 +1264,71 @@ async def get_positions():
             "positions": [],
             "message": "No exchange connected. Add EXCHANGE_API_KEY and EXCHANGE_API_SECRET to .env to see real positions.",
             "exchange_configured": False,
+            "source": "none",
         }
     try:
-        enabled_pairs = registry.list_enabled_pairs()
+        raw_positions = broker_adapter.fetch_positions()
         positions = []
-        for pair in enabled_pairs:
-            try:
-                ticker = broker_adapter.fetch_ticker(pair)
-                current_price = ticker.get("last", 0.0) or 0.0
-                open_orders = broker_adapter.fetch_open_orders(pair)
-                for order in open_orders:
-                    entry_price = float(order.get("price") or order.get("average") or current_price)
-                    size = float(order.get("amount", 0))
-                    side_raw = order.get("side", "buy")
-                    side = "long" if side_raw == "buy" else "short"
-                    pnl = (current_price - entry_price) * size if side == "long" else (entry_price - current_price) * size
-                    pnl_pct = ((current_price / entry_price) - 1) * 100 if entry_price > 0 else 0.0
-                    if side == "short":
-                        pnl_pct = -pnl_pct
-                    positions.append({
-                        "symbol": pair,
-                        "side": side,
-                        "size": size,
-                        "entry_price": entry_price,
-                        "current_price": current_price,
-                        "pnl": round(pnl, 4),
-                        "pnl_percentage": round(pnl_pct, 4),
-                        "leverage": 1,
-                    })
-            except Exception as pair_err:
-                logger.debug(f"Could not fetch positions for {pair}: {pair_err}")
-        return {"success": True, "positions": positions, "exchange_configured": True}
+        for pos in raw_positions:
+            contracts = float(pos.get("contracts") or pos.get("amount") or 0)
+            notional = float(pos.get("notional") or 0)
+            if contracts == 0 and notional == 0:
+                continue
+            side_raw = pos.get("side", "long")
+            side = "long" if side_raw in ("long", "buy") else "short"
+            entry_price = float(pos.get("entryPrice") or pos.get("entry_price") or 0)
+            current_price = float(pos.get("markPrice") or pos.get("mark_price") or entry_price)
+            unrealized_pnl = float(pos.get("unrealizedPnl") or pos.get("unrealized_pnl") or 0)
+            pnl_pct = 0.0
+            if entry_price > 0 and contracts > 0:
+                pnl_pct = (unrealized_pnl / (entry_price * contracts)) * 100
+            positions.append({
+                "symbol": pos.get("symbol", ""),
+                "side": side,
+                "size": contracts,
+                "entry_price": round(entry_price, 8),
+                "current_price": round(current_price, 8),
+                "pnl": round(unrealized_pnl, 4),
+                "pnl_percentage": round(pnl_pct, 4),
+                "leverage": int(pos.get("leverage") or 1),
+                "source": "exchange",
+            })
+        return {"success": True, "positions": positions, "exchange_configured": True, "source": "exchange"}
     except Exception as e:
-        logger.error(f"Error fetching positions: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        logger.error(f"Error fetching positions from exchange: {e}")
+        return {
+            "success": True,
+            "positions": [],
+            "exchange_configured": True,
+            "message": f"Could not fetch positions from exchange: {e}",
+            "source": "error",
+        }
 
 
 @app.get("/api/trades")
 async def get_trades(limit: int = 50):
-    """Get recent trade history from alert storage."""
+    """Get recent trade history — from the exchange when available, otherwise from alert storage."""
+    if broker_adapter is not None:
+        try:
+            raw_trades = broker_adapter.fetch_my_trades(limit=limit)
+            trades = []
+            for t in raw_trades:
+                trades.append({
+                    "id": str(t.get("id", "")),
+                    "timestamp": t.get("datetime", ""),
+                    "symbol": t.get("symbol", ""),
+                    "side": t.get("side", "buy"),
+                    "size": float(t.get("amount") or 0),
+                    "price": float(t.get("price") or 0),
+                    "pnl": float(t.get("info", {}).get("realizedPnl", 0) or 0) if isinstance(t.get("info"), dict) else 0.0,
+                    "status": "closed",
+                    "source": "exchange",
+                })
+            return {"success": True, "trades": trades, "count": len(trades), "source": "exchange"}
+        except Exception as e:
+            logger.warning(f"Could not fetch trades from exchange, falling back to alert storage: {e}")
+
+    # Fallback: alert storage
     try:
         alerts = alert_storage.list_alerts(limit=limit, status="executed")
         trades = []
@@ -1314,9 +1341,11 @@ async def get_trades(limit: int = 50):
                 "side": alert_dict.get("side", "buy"),
                 "size": float(alert_dict.get("size", 0)),
                 "price": float(alert_dict.get("price", 0)),
+                "pnl": float(alert_dict.get("pnl", 0) or 0),
                 "status": "closed" if alert_dict.get("status") == "executed" else "open",
+                "source": "alerts",
             })
-        return {"success": True, "trades": trades, "count": len(trades)}
+        return {"success": True, "trades": trades, "count": len(trades), "source": "alerts"}
     except Exception as e:
         logger.error(f"Error fetching trades: {e}")
         return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
@@ -1325,33 +1354,61 @@ async def get_trades(limit: int = 50):
 @app.get("/api/pnl-history")
 async def get_pnl_history(period: str = "24h"):
     """
-    Get PnL history computed from executed alerts.
+    Get PnL history.  Computed from real exchange trade fills when available,
+    otherwise falls back to executed-alert metadata.
     Returns a time-series of realized PnL data points.
     """
     try:
         period_hours = {"1h": 1, "4h": 4, "24h": 24, "7d": 168, "30d": 720}.get(period, 24)
-        alerts = alert_storage.list_alerts(limit=500, status="executed")
-
         pnl_by_hour: dict = {}
         cumulative = 0.0
-        for alert in reversed(alerts):
-            alert_dict = alert.to_dict()
-            ts_raw = alert_dict.get("received_at", "")
+        data_source = "alerts"
+
+        if broker_adapter is not None:
             try:
-                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")) if ts_raw else None
-            except Exception:
-                ts = None
+                # Fetch enough recent trades to cover the requested period
+                raw_trades = broker_adapter.fetch_my_trades(limit=500)
+                data_source = "exchange"
+                for trade in reversed(raw_trades):
+                    ts_raw = trade.get("datetime", "")
+                    try:
+                        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")) if ts_raw else None
+                    except Exception:
+                        ts = None
+                    if ts is None:
+                        continue
+                    hour_key = ts.strftime("%Y-%m-%dT%H:00:00")
+                    info = trade.get("info", {}) or {}
+                    realized = float(info.get("realizedPnl", 0) or 0)
+                    cumulative += realized
+                    if hour_key not in pnl_by_hour:
+                        pnl_by_hour[hour_key] = {"realized": 0.0, "cumulative": cumulative}
+                    pnl_by_hour[hour_key]["realized"] += realized
+                    pnl_by_hour[hour_key]["cumulative"] = cumulative
+            except Exception as e:
+                logger.warning(f"Could not fetch trade history from exchange for PnL, falling back to alert storage: {e}")
+                pnl_by_hour = {}
+                cumulative = 0.0
+                data_source = "alerts"
 
-            if ts is None:
-                continue
-
-            hour_key = ts.strftime("%Y-%m-%dT%H:00:00")
-            realized = float(alert_dict.get("pnl", 0) or 0)
-            cumulative += realized
-            if hour_key not in pnl_by_hour:
-                pnl_by_hour[hour_key] = {"realized": 0.0, "cumulative": cumulative}
-            pnl_by_hour[hour_key]["realized"] += realized
-            pnl_by_hour[hour_key]["cumulative"] = cumulative
+        if data_source == "alerts":
+            alerts = alert_storage.list_alerts(limit=500, status="executed")
+            for alert in reversed(alerts):
+                alert_dict = alert.to_dict()
+                ts_raw = alert_dict.get("received_at", "")
+                try:
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")) if ts_raw else None
+                except Exception:
+                    ts = None
+                if ts is None:
+                    continue
+                hour_key = ts.strftime("%Y-%m-%dT%H:00:00")
+                realized = float(alert_dict.get("pnl", 0) or 0)
+                cumulative += realized
+                if hour_key not in pnl_by_hour:
+                    pnl_by_hour[hour_key] = {"realized": 0.0, "cumulative": cumulative}
+                pnl_by_hour[hour_key]["realized"] += realized
+                pnl_by_hour[hour_key]["cumulative"] = cumulative
 
         history = [
             {
@@ -1363,7 +1420,7 @@ async def get_pnl_history(period: str = "24h"):
             for k, v in sorted(pnl_by_hour.items())
         ][-period_hours:]
 
-        return {"success": True, "period": period, "data": history}
+        return {"success": True, "period": period, "data": history, "source": data_source}
     except Exception as e:
         logger.error(f"Error fetching PnL history: {e}")
         return JSONResponse(status_code=500, content={"success": False, "message": str(e)})

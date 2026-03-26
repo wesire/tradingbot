@@ -67,6 +67,15 @@ export interface PnLData {
   total_pnl: number;
 }
 
+export interface WSMessage {
+  type: 'update' | 'ping' | 'subscribe_ack' | 'error'
+  channel?: string
+  data?: unknown
+  timestamp?: string
+  message?: string
+  channels?: string[]
+}
+
 export interface SentimentSummary {
   overview: {
     combined_score: number;
@@ -117,6 +126,94 @@ export interface AdvisoryOutput {
   technical_score: number;
   regime_alignment: number;
   sentiment_score: number;
+}
+
+export interface MLModelStatus {
+  model_loaded: boolean;
+  model_path: string | null;
+  model_version: string | null;
+  last_trained: string | null;
+  features_count: number;
+  training_samples: number | null;
+  is_demo: boolean;
+}
+
+export interface MLFeature {
+  name: string;
+  importance: number;
+  direction?: 'positive' | 'neutral';
+}
+
+export interface MLFeatureImportance {
+  features: MLFeature[];
+  method: 'shap' | 'built_in' | 'demo';
+  model_version: string | null;
+}
+
+export interface ConfusionMatrix {
+  tp: number;
+  fp: number;
+  tn: number;
+  fn: number;
+}
+
+export interface RollingAccuracy {
+  window_start: string;
+  accuracy: number;
+}
+
+export interface ConfidenceBucket {
+  bucket: string;
+  count: number;
+}
+
+export interface MLBacktestMetrics {
+  precision: number;
+  recall: number;
+  f1_score: number;
+  accuracy: number;
+  total_predictions: number;
+  confusion_matrix: ConfusionMatrix;
+  profit_with_ml: number;
+  profit_without_ml: number;
+  profit_improvement_pct: number;
+  rolling_accuracy: RollingAccuracy[];
+  confidence_distribution: ConfidenceBucket[];
+  feature_importance: MLFeature[];
+  feature_importance_method: string;
+  is_demo: boolean;
+  model_version: string | null;
+  backtest_start: string | null;
+  backtest_end: string | null;
+  pair: string | null;
+  timeframe: string | null;
+}
+
+export interface MLBacktestResult {
+  success: boolean;
+  metrics: MLBacktestMetrics;
+}
+
+export interface MLPrediction {
+  timestamp: string;
+  pair: string;
+  signal: 'buy' | 'sell' | 'hold';
+  confidence: number;
+  actual_outcome: 'win' | 'loss' | 'pending';
+  features_used?: number;
+}
+
+export interface MLRecentPredictions {
+  predictions: MLPrediction[];
+  total: number;
+  is_demo: boolean;
+}
+
+export interface BacktestRequest {
+  start_date?: string;
+  end_date?: string;
+  pair?: string;
+  timeframe?: string;
 }
 
 class ApiClient {
@@ -214,6 +311,25 @@ class ApiClient {
     return this.request('/api/resume', {
       method: 'POST',
     });
+  }
+
+  async getMLStatus(): Promise<MLModelStatus> {
+    return this.request<MLModelStatus>('/api/ml/status');
+  }
+
+  async getMLFeatureImportance(): Promise<MLFeatureImportance> {
+    return this.request<MLFeatureImportance>('/api/ml/feature-importance');
+  }
+
+  async runMLBacktest(params: BacktestRequest = {}): Promise<MLBacktestResult> {
+    return this.request<MLBacktestResult>('/api/ml/backtest', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  async getRecentMLPredictions(limit = 50): Promise<MLRecentPredictions> {
+    return this.request<MLRecentPredictions>(`/api/ml/predictions/recent?limit=${limit}`);
   }
 }
 

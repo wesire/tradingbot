@@ -1,17 +1,20 @@
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { Activity, DollarSign, TrendingUp, Zap, RefreshCw, AlertCircle } from "lucide-react"
 import { StatusCard } from "@/components/StatusCard"
 import { TradeTable } from "@/components/TradeTable"
 import { PnLChart } from "@/components/PnLChart"
 import { SentimentWidget } from "@/components/SentimentWidget"
+import { ConnectionStatus } from "@/components/ConnectionStatus"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { apiClient } from "@/api/client"
+import { useWebSocket } from "@/hooks/useWebSocket"
 import type { BotStatus, Position, Trade, PnLData } from "@/api/client"
 
-const REFRESH_INTERVAL_MS = 30_000 // 30 seconds
+const HTTP_POLL_FALLBACK_INTERVAL_MS = 30_000 // 30-second fallback HTTP polling when WebSocket unavailable
+const WS_CHANNELS = ["positions", "trades", "status", "alerts"]
 
 export function Dashboard() {
   const [status, setStatus] = useState<BotStatus | null>(null)
@@ -24,6 +27,49 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
 
+  // Flash state: tracks which channel cards were recently updated via WebSocket
+  const [flashedChannels, setFlashedChannels] = useState<Set<string>>(new Set())
+  const flashTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  const flashChannel = useCallback((channel: string) => {
+    if (flashTimers.current[channel]) clearTimeout(flashTimers.current[channel])
+    setFlashedChannels(prev => new Set([...prev, channel]))
+    flashTimers.current[channel] = setTimeout(() => {
+      setFlashedChannels(prev => {
+        const next = new Set(prev)
+        next.delete(channel)
+        return next
+      })
+    }, 1200)
+  }, [])
+
+  // WebSocket connection — real-time streaming
+  const { connectionState, data: wsData, lastUpdate, activeSubscriptions } = useWebSocket(WS_CHANNELS)
+  const wsConnected = connectionState === 'connected'
+
+  // Apply WebSocket data updates
+  const prevWsData = useRef<Record<string, unknown>>({})
+  useEffect(() => {
+    if (wsData.positions !== prevWsData.current.positions && wsData.positions) {
+      const payload = wsData.positions as { positions?: Position[] }
+      if (payload.positions) {
+        setPositions(payload.positions)
+        flashChannel("positions")
+        setLastRefresh(new Date())
+      }
+    }
+
+    if (wsData.status !== prevWsData.current.status && wsData.status) {
+      const payload = wsData.status as Partial<BotStatus>
+      setStatus(prev => prev ? { ...prev, ...payload } : (payload as BotStatus))
+      flashChannel("status")
+      setLastRefresh(new Date())
+    }
+
+    prevWsData.current = wsData
+  }, [wsData, flashChannel])
+
+  // HTTP polling fallback — always runs for initial load; continues at 30s
   const fetchData = useCallback(async () => {
     try {
       const [statusData, positionsData, tradesData, pnlDataResult] = await Promise.allSettled([
@@ -34,7 +80,10 @@ export function Dashboard() {
       ])
 
       if (statusData.status === 'fulfilled') setStatus(statusData.value)
-      if (positionsData.status === 'fulfilled') setPositions(positionsData.value)
+      // Only update positions from HTTP when WebSocket is not connected
+      if (positionsData.status === 'fulfilled' && !wsConnected) {
+        setPositions(positionsData.value)
+      }
       if (tradesData.status === 'fulfilled') {
         const result = tradesData.value as Trade[] & { _source?: 'exchange' | 'alerts' }
         setTrades(result)
@@ -52,11 +101,11 @@ export function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [wsConnected])
 
   useEffect(() => {
     fetchData()
-    const interval = setInterval(fetchData, REFRESH_INTERVAL_MS)
+    const interval = setInterval(fetchData, HTTP_POLL_FALLBACK_INTERVAL_MS)
     return () => clearInterval(interval)
   }, [fetchData])
 
@@ -76,9 +125,16 @@ export function Dashboard() {
             Real-time overview of your trading bot performance
           </p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-          {lastRefresh.toLocaleTimeString()}
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <ConnectionStatus
+            connectionState={connectionState}
+            lastUpdate={lastUpdate}
+            activeSubscriptions={activeSubscriptions}
+          />
+          <div className="flex items-center gap-1">
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+            {lastRefresh.toLocaleTimeString()}
+          </div>
         </div>
       </div>
 
@@ -95,18 +151,21 @@ export function Dashboard() {
           value={status ? status.status.toUpperCase() : '—'}
           subtitle={status ? `Mode: ${status.mode}` : 'Loading…'}
           icon={Activity}
+          flash={flashedChannels.has("status")}
         />
         <StatusCard
           title="Total P&L"
           value={`$${totalPnL.toFixed(2)}`}
           subtitle={`${totalPnLPercentage >= 0 ? '+' : ''}${totalPnLPercentage.toFixed(2)}%`}
           icon={DollarSign}
+          flash={flashedChannels.has("positions")}
         />
         <StatusCard
           title="Open Positions"
           value={positions.length}
           subtitle={`${positions.filter(p => p.side === 'long').length} long, ${positions.filter(p => p.side === 'short').length} short`}
           icon={TrendingUp}
+          flash={flashedChannels.has("positions")}
         />
         <StatusCard
           title="Uptime"
@@ -239,4 +298,3 @@ export function Dashboard() {
     </div>
   )
 }
-

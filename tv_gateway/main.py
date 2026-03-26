@@ -3,7 +3,7 @@ FastAPI webhook gateway for TradingView alerts.
 Phase 2.1: Production hardening with security, reliability, and safe operations.
 """
 from typing import Optional
-from fastapi import FastAPI, Request, HTTPException, status, Header, Depends
+from fastapi import FastAPI, Request, HTTPException, status, Header, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from contextlib import asynccontextmanager
@@ -14,7 +14,7 @@ try:
     load_dotenv()  # loads .env from working directory if present (e.g. /app/.env in Docker)
 except ImportError:
     pass  # python-dotenv not installed, rely on container env vars
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 from pathlib import Path
@@ -31,6 +31,7 @@ from tv_gateway.rate_limiter import RateLimiter
 from tv_gateway.ip_filter import IPFilter
 from tv_gateway.circuit_breaker import CircuitBreaker, CircuitState
 from tv_gateway.structured_logging import audit_logger
+from tv_gateway.websocket_manager import ws_manager
 from bot.config.default_config import config
 from bot.sentiment import (
     MockSentimentProvider,
@@ -75,6 +76,14 @@ CIRCUIT_BREAKER_COOLDOWN = int(os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECONDS", "60
 IP_ALLOWLIST = os.getenv("IP_ALLOWLIST", "")
 IP_DENYLIST = os.getenv("IP_DENYLIST", "")
 TRUSTED_PROXY_CIDRS = os.getenv("TRUSTED_PROXY_CIDRS", "")
+
+# WebSocket configuration
+WS_HEARTBEAT_INTERVAL = int(os.getenv("WS_HEARTBEAT_INTERVAL_SECONDS", "30"))
+WS_MAX_CLIENTS = int(os.getenv("WS_MAX_CLIENTS", "50"))
+WS_BROADCAST_POSITIONS_INTERVAL = int(os.getenv("WS_BROADCAST_POSITIONS_INTERVAL", "5"))
+WS_BROADCAST_STATUS_INTERVAL = int(os.getenv("WS_BROADCAST_STATUS_INTERVAL", "10"))
+WS_BROADCAST_SENTIMENT_INTERVAL = int(os.getenv("WS_BROADCAST_SENTIMENT_INTERVAL", "60"))
+WS_BROADCAST_OPPORTUNITIES_INTERVAL = int(os.getenv("WS_BROADCAST_OPPORTUNITIES_INTERVAL", "30"))
 
 # Service state
 service_start_time = datetime.now()
@@ -170,7 +179,115 @@ async def lifespan(app: FastAPI):
                 logger.error(f"Nonce cleanup error: {e}")
     
     cleanup_task = asyncio.create_task(cleanup_nonces_periodically())
-    
+
+    # ------------------------------------------------------------------
+    # WebSocket background broadcast tasks
+    # ------------------------------------------------------------------
+
+    async def broadcast_positions():
+        """Every WS_BROADCAST_POSITIONS_INTERVAL seconds push positions."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    if broker_adapter is None:
+                        payload: dict = {"positions": [], "exchange_configured": False}
+                    else:
+                        raw = broker_adapter.fetch_positions()
+                        positions = []
+                        for pos in raw:
+                            contracts = float(pos.get("contracts") or pos.get("amount") or 0)
+                            notional = float(pos.get("notional") or 0)
+                            if contracts == 0 and notional == 0:
+                                continue
+                            side_raw = pos.get("side", "long")
+                            side = "long" if side_raw in ("long", "buy") else "short"
+                            entry_price = float(pos.get("entryPrice") or pos.get("entry_price") or 0)
+                            current_price = float(pos.get("markPrice") or pos.get("mark_price") or entry_price)
+                            unrealized_pnl = float(pos.get("unrealizedPnl") or pos.get("unrealized_pnl") or 0)
+                            pnl_pct = 0.0
+                            if entry_price > 0 and contracts > 0:
+                                pnl_pct = (unrealized_pnl / (entry_price * contracts)) * 100
+                            positions.append({
+                                "symbol": pos.get("symbol", ""),
+                                "side": side,
+                                "size": contracts,
+                                "entry_price": round(entry_price, 8),
+                                "current_price": round(current_price, 8),
+                                "pnl": round(unrealized_pnl, 4),
+                                "pnl_percentage": round(pnl_pct, 4),
+                                "leverage": int(pos.get("leverage") or 1),
+                            })
+                        payload = {"positions": positions, "exchange_configured": True}
+                    await ws_manager.broadcast("positions", payload)
+            except Exception as exc:
+                logger.debug(f"WS positions broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_POSITIONS_INTERVAL)
+
+    async def broadcast_status():
+        """Every WS_BROADCAST_STATUS_INTERVAL seconds push bot status."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    uptime = (datetime.now() - service_start_time).total_seconds()
+                    payload = {
+                        "status": "running" if not bot_paused else "paused",
+                        "mode": RUNMODE,
+                        "uptime": uptime,
+                        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                        "exchange_connected": broker_adapter is not None,
+                        "websocket_clients": ws_manager.client_count,
+                    }
+                    await ws_manager.broadcast("status", payload)
+            except Exception as exc:
+                logger.debug(f"WS status broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_STATUS_INTERVAL)
+
+    async def broadcast_sentiment():
+        """Every WS_BROADCAST_SENTIMENT_INTERVAL seconds push sentiment scores."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    enabled_pairs = registry.list_enabled_pairs()
+                    sentiments = sentiment_aggregator.aggregate_multi_asset(enabled_pairs)
+                    overview = sentiment_aggregator.get_market_overview(enabled_pairs)
+                    payload = {
+                        "overview": overview,
+                        "assets": {k: v.to_dict() for k, v in sentiments.items()},
+                        "providers": [type(p).__name__ for p in _sentiment_providers],
+                    }
+                    await ws_manager.broadcast("sentiment", payload)
+            except Exception as exc:
+                logger.debug(f"WS sentiment broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_SENTIMENT_INTERVAL)
+
+    async def broadcast_opportunities():
+        """Every WS_BROADCAST_OPPORTUNITIES_INTERVAL seconds push scored opportunities."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    enabled_pairs = registry.list_enabled_pairs()
+                    opps = []
+                    for pair in enabled_pairs:
+                        base_asset = pair.split("/")[0] if "/" in pair else pair
+                        sentiment = sentiment_aggregator.aggregate_sentiment(base_asset)
+                        scored = opportunity_scorer.score_opportunities(
+                            pair=pair,
+                            timeframe="5m",
+                            sentiment=sentiment,
+                        )
+                        opps.extend(scored)
+                    opps.sort(key=lambda o: o.get("confidence", 0), reverse=True)
+                    await ws_manager.broadcast("opportunities", {"opportunities": opps[:10]})
+            except Exception as exc:
+                logger.debug(f"WS opportunities broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_OPPORTUNITIES_INTERVAL)
+
+    ws_heartbeat_task = asyncio.create_task(ws_manager.run_heartbeat())
+    ws_positions_task = asyncio.create_task(broadcast_positions())
+    ws_status_task = asyncio.create_task(broadcast_status())
+    ws_sentiment_task = asyncio.create_task(broadcast_sentiment())
+    ws_opportunities_task = asyncio.create_task(broadcast_opportunities())
+
     logger.info("Service started successfully with execution worker and security features")
     
     yield
@@ -190,6 +307,10 @@ async def lifespan(app: FastAPI):
     
     if cleanup_task:
         cleanup_task.cancel()
+
+    for _task in (ws_heartbeat_task, ws_positions_task, ws_status_task,
+                  ws_sentiment_task, ws_opportunities_task):
+        _task.cancel()
     
     logger.info("Shutdown complete")
 
@@ -1059,6 +1180,16 @@ async def receive_webhook(
     )
     
     # Alert will be picked up by execution worker
+    # Broadcast the new alert to WebSocket subscribers immediately
+    asyncio.create_task(ws_manager.broadcast("alerts", {
+        "id": str(alert_id),
+        "symbol": payload.symbol,
+        "side": payload.side,
+        "confidence": payload.confidence,
+        "setup_id": payload.setup_id,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }))
+
     return WebhookResponse(
         success=True,
         message="Alert received and queued for execution",
@@ -1969,6 +2100,170 @@ async def get_stats():
             content={"success": False, "message": str(e)}
         )
 
+# ---------------------------------------------------------------------------
+# ML endpoints
+# ---------------------------------------------------------------------------
+
+# Lazy singleton so we don't import heavy ML deps at module load time
+_ml_backtester = None
+
+
+def _get_backtester():
+    global _ml_backtester
+    if _ml_backtester is None:
+        try:
+            from bot.ml.backtester import MLBacktester
+            _ml_backtester = MLBacktester()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Could not initialise MLBacktester: %s", exc)
+            _ml_backtester = None
+    return _ml_backtester
+
+
+@app.get("/api/ml/status")
+async def get_ml_status():
+    """
+    Return the current ML model status.
+
+    When no model is loaded, all fields use sensible defaults/null values.
+    """
+    ml_model_path = os.getenv("ML_MODEL_PATH", "")
+    model_loaded = bool(ml_model_path and os.path.exists(ml_model_path))
+
+    backtester = _get_backtester()
+    features_count = 0
+    model_version = None
+
+    if model_loaded and backtester is not None and backtester.model_loaded:
+        clf = getattr(backtester, "_classifier", None)
+        if clf is not None:
+            features_count = len(getattr(clf, "feature_names", []))
+            model_version = getattr(clf, "active_version", None)
+    else:
+        # Demo defaults
+        from bot.ml.feature_engineer import FeatureEngineer
+        features_count = len(FeatureEngineer.FEATURE_NAMES)
+
+    return {
+        "model_loaded": model_loaded,
+        "model_path": ml_model_path or None,
+        "model_version": model_version,
+        "last_trained": None,
+        "features_count": features_count,
+        "training_samples": None,
+        "is_demo": not model_loaded,
+    }
+
+
+@app.get("/api/ml/feature-importance")
+async def get_ml_feature_importance():
+    """
+    Return feature importance rankings.
+
+    Uses SHAP values when available, falls back to built-in importances,
+    then to demo data when no model is loaded.
+    """
+    backtester = _get_backtester()
+
+    if backtester is None:
+        from bot.ml.backtester import _make_demo_feature_importance
+        return {
+            "features": _make_demo_feature_importance(),
+            "method": "demo",
+            "model_version": None,
+        }
+
+    features, method = backtester.get_feature_importance()
+    model_version = None
+    if backtester.model_loaded:
+        clf = getattr(backtester, "_classifier", None)
+        if clf is not None:
+            model_version = getattr(clf, "active_version", None)
+
+    return {
+        "features": features,
+        "method": method,
+        "model_version": model_version,
+    }
+
+
+@app.post("/api/ml/backtest")
+async def run_ml_backtest(request: Request):
+    """
+    Run an ML backtest over a date range.
+
+    Request body (all fields optional)::
+
+        {
+            "start_date": "2025-01-01",
+            "end_date":   "2025-12-31",
+            "pair":       "BTC/USDT:USDT",
+            "timeframe":  "5m"
+        }
+
+    Returns comprehensive metrics.  When no model is loaded the response
+    contains realistic demo data (``is_demo: true``).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+    pair = body.get("pair", "BTC/USDT:USDT")
+    timeframe = body.get("timeframe", "5m")
+
+    backtester = _get_backtester()
+
+    if backtester is None:
+        from bot.ml.backtester import _build_demo_result
+        result = _build_demo_result(pair, timeframe, start_date, end_date)
+        return {"success": True, "metrics": result.to_dict()}
+
+    result = backtester.run(
+        ohlcv_df=None,
+        start_date=start_date,
+        end_date=end_date,
+        pair=pair,
+        timeframe=timeframe,
+    )
+    return {"success": True, "metrics": result.to_dict()}
+
+
+@app.get("/api/ml/predictions/recent")
+async def get_recent_ml_predictions(limit: int = 50):
+    """
+    Return the most recent ML predictions (demo data when no model is loaded).
+    """
+    ml_model_path = os.getenv("ML_MODEL_PATH", "")
+    model_loaded = bool(ml_model_path and os.path.exists(ml_model_path))
+
+    if not model_loaded:
+        import random
+        rng = random.Random(42)
+        signals = ["buy", "sell", "hold"]
+        outcomes = ["win", "loss", "pending"]
+        demo_predictions = []
+        now = datetime.now(timezone.utc)
+        from bot.ml.feature_engineer import FeatureEngineer
+        feat_count = len(FeatureEngineer.FEATURE_NAMES)
+        for i in range(min(limit, 20)):
+            ts = (now - timedelta(minutes=5 * (i + 1))).strftime("%Y-%m-%dT%H:%M:%SZ")
+            demo_predictions.append({
+                "timestamp": ts,
+                "pair": "BTC/USDT:USDT",
+                "signal": rng.choice(signals),
+                "confidence": round(rng.uniform(0.50, 0.95), 3),
+                "actual_outcome": rng.choice(outcomes),
+                "features_used": feat_count,
+            })
+        return {"predictions": demo_predictions, "total": len(demo_predictions), "is_demo": True}
+
+    # Real model: placeholder – extend with a live prediction log if available
+    return {"predictions": [], "total": 0, "is_demo": False}
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler."""
@@ -1982,6 +2277,35 @@ async def global_exception_handler(request: Request, exc: Exception):
             "detail": str(exc) if os.getenv("DEBUG") else "An error occurred"
         }
     )
+
+
+# ============================================================================
+# WebSocket endpoint
+# ============================================================================
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Real-time streaming WebSocket endpoint.
+
+    Clients subscribe to channels and receive push updates:
+      positions, trades, sentiment, status, alerts, opportunities
+    """
+    if ws_manager.client_count >= WS_MAX_CLIENTS:
+        await websocket.close(code=1008, reason="Max clients reached")
+        return
+
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await ws_manager.handle_message(websocket, data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug(f"WebSocket error: {exc}")
+    finally:
+        await ws_manager.disconnect(websocket)
 
 
 if __name__ == "__main__":

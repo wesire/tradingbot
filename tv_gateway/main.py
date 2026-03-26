@@ -1226,6 +1226,7 @@ def _compute_ema(prices: list, period: int) -> float:
     return ema
 
 
+@app.get("/api/status")
 async def get_bot_status():
     """Get current bot status including mode, uptime, and configuration."""
     uptime = (datetime.now() - service_start_time).total_seconds()

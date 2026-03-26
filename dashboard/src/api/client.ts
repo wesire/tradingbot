@@ -67,6 +67,15 @@ export interface PnLData {
   total_pnl: number;
 }
 
+export interface WSMessage {
+  type: 'update' | 'ping' | 'subscribe_ack' | 'error'
+  channel?: string
+  data?: unknown
+  timestamp?: string
+  message?: string
+  channels?: string[]
+}
+
 export interface SentimentSummary {
   overview: {
     combined_score: number;

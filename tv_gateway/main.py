@@ -3,7 +3,7 @@ FastAPI webhook gateway for TradingView alerts.
 Phase 2.1: Production hardening with security, reliability, and safe operations.
 """
 from typing import Optional
-from fastapi import FastAPI, Request, HTTPException, status, Header, Depends
+from fastapi import FastAPI, Request, HTTPException, status, Header, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from contextlib import asynccontextmanager
@@ -31,6 +31,7 @@ from tv_gateway.rate_limiter import RateLimiter
 from tv_gateway.ip_filter import IPFilter
 from tv_gateway.circuit_breaker import CircuitBreaker, CircuitState
 from tv_gateway.structured_logging import audit_logger
+from tv_gateway.websocket_manager import ws_manager
 from bot.config.default_config import config
 from bot.sentiment import (
     MockSentimentProvider,
@@ -75,6 +76,14 @@ CIRCUIT_BREAKER_COOLDOWN = int(os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECONDS", "60
 IP_ALLOWLIST = os.getenv("IP_ALLOWLIST", "")
 IP_DENYLIST = os.getenv("IP_DENYLIST", "")
 TRUSTED_PROXY_CIDRS = os.getenv("TRUSTED_PROXY_CIDRS", "")
+
+# WebSocket configuration
+WS_HEARTBEAT_INTERVAL = int(os.getenv("WS_HEARTBEAT_INTERVAL_SECONDS", "30"))
+WS_MAX_CLIENTS = int(os.getenv("WS_MAX_CLIENTS", "50"))
+WS_BROADCAST_POSITIONS_INTERVAL = int(os.getenv("WS_BROADCAST_POSITIONS_INTERVAL", "5"))
+WS_BROADCAST_STATUS_INTERVAL = int(os.getenv("WS_BROADCAST_STATUS_INTERVAL", "10"))
+WS_BROADCAST_SENTIMENT_INTERVAL = int(os.getenv("WS_BROADCAST_SENTIMENT_INTERVAL", "60"))
+WS_BROADCAST_OPPORTUNITIES_INTERVAL = int(os.getenv("WS_BROADCAST_OPPORTUNITIES_INTERVAL", "30"))
 
 # Service state
 service_start_time = datetime.now()
@@ -170,7 +179,115 @@ async def lifespan(app: FastAPI):
                 logger.error(f"Nonce cleanup error: {e}")
     
     cleanup_task = asyncio.create_task(cleanup_nonces_periodically())
-    
+
+    # ------------------------------------------------------------------
+    # WebSocket background broadcast tasks
+    # ------------------------------------------------------------------
+
+    async def broadcast_positions():
+        """Every WS_BROADCAST_POSITIONS_INTERVAL seconds push positions."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    if broker_adapter is None:
+                        payload: dict = {"positions": [], "exchange_configured": False}
+                    else:
+                        raw = broker_adapter.fetch_positions()
+                        positions = []
+                        for pos in raw:
+                            contracts = float(pos.get("contracts") or pos.get("amount") or 0)
+                            notional = float(pos.get("notional") or 0)
+                            if contracts == 0 and notional == 0:
+                                continue
+                            side_raw = pos.get("side", "long")
+                            side = "long" if side_raw in ("long", "buy") else "short"
+                            entry_price = float(pos.get("entryPrice") or pos.get("entry_price") or 0)
+                            current_price = float(pos.get("markPrice") or pos.get("mark_price") or entry_price)
+                            unrealized_pnl = float(pos.get("unrealizedPnl") or pos.get("unrealized_pnl") or 0)
+                            pnl_pct = 0.0
+                            if entry_price > 0 and contracts > 0:
+                                pnl_pct = (unrealized_pnl / (entry_price * contracts)) * 100
+                            positions.append({
+                                "symbol": pos.get("symbol", ""),
+                                "side": side,
+                                "size": contracts,
+                                "entry_price": round(entry_price, 8),
+                                "current_price": round(current_price, 8),
+                                "pnl": round(unrealized_pnl, 4),
+                                "pnl_percentage": round(pnl_pct, 4),
+                                "leverage": int(pos.get("leverage") or 1),
+                            })
+                        payload = {"positions": positions, "exchange_configured": True}
+                    await ws_manager.broadcast("positions", payload)
+            except Exception as exc:
+                logger.debug(f"WS positions broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_POSITIONS_INTERVAL)
+
+    async def broadcast_status():
+        """Every WS_BROADCAST_STATUS_INTERVAL seconds push bot status."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    uptime = (datetime.now() - service_start_time).total_seconds()
+                    payload = {
+                        "status": "running" if not bot_paused else "paused",
+                        "mode": RUNMODE,
+                        "uptime": uptime,
+                        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                        "exchange_connected": broker_adapter is not None,
+                        "websocket_clients": ws_manager.client_count,
+                    }
+                    await ws_manager.broadcast("status", payload)
+            except Exception as exc:
+                logger.debug(f"WS status broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_STATUS_INTERVAL)
+
+    async def broadcast_sentiment():
+        """Every WS_BROADCAST_SENTIMENT_INTERVAL seconds push sentiment scores."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    enabled_pairs = registry.list_enabled_pairs()
+                    sentiments = sentiment_aggregator.aggregate_multi_asset(enabled_pairs)
+                    overview = sentiment_aggregator.get_market_overview(enabled_pairs)
+                    payload = {
+                        "overview": overview,
+                        "assets": {k: v.to_dict() for k, v in sentiments.items()},
+                        "providers": [type(p).__name__ for p in _sentiment_providers],
+                    }
+                    await ws_manager.broadcast("sentiment", payload)
+            except Exception as exc:
+                logger.debug(f"WS sentiment broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_SENTIMENT_INTERVAL)
+
+    async def broadcast_opportunities():
+        """Every WS_BROADCAST_OPPORTUNITIES_INTERVAL seconds push scored opportunities."""
+        while True:
+            try:
+                if ws_manager.client_count > 0:
+                    enabled_pairs = registry.list_enabled_pairs()
+                    opps = []
+                    for pair in enabled_pairs:
+                        base_asset = pair.split("/")[0] if "/" in pair else pair
+                        sentiment = sentiment_aggregator.aggregate_sentiment(base_asset)
+                        scored = opportunity_scorer.score_opportunities(
+                            pair=pair,
+                            timeframe="5m",
+                            sentiment=sentiment,
+                        )
+                        opps.extend(scored)
+                    opps.sort(key=lambda o: o.get("confidence", 0), reverse=True)
+                    await ws_manager.broadcast("opportunities", {"opportunities": opps[:10]})
+            except Exception as exc:
+                logger.debug(f"WS opportunities broadcast error: {exc}")
+            await asyncio.sleep(WS_BROADCAST_OPPORTUNITIES_INTERVAL)
+
+    ws_heartbeat_task = asyncio.create_task(ws_manager.run_heartbeat())
+    ws_positions_task = asyncio.create_task(broadcast_positions())
+    ws_status_task = asyncio.create_task(broadcast_status())
+    ws_sentiment_task = asyncio.create_task(broadcast_sentiment())
+    ws_opportunities_task = asyncio.create_task(broadcast_opportunities())
+
     logger.info("Service started successfully with execution worker and security features")
     
     yield
@@ -190,6 +307,10 @@ async def lifespan(app: FastAPI):
     
     if cleanup_task:
         cleanup_task.cancel()
+
+    for _task in (ws_heartbeat_task, ws_positions_task, ws_status_task,
+                  ws_sentiment_task, ws_opportunities_task):
+        _task.cancel()
     
     logger.info("Shutdown complete")
 
@@ -1059,6 +1180,16 @@ async def receive_webhook(
     )
     
     # Alert will be picked up by execution worker
+    # Broadcast the new alert to WebSocket subscribers immediately
+    asyncio.create_task(ws_manager.broadcast("alerts", {
+        "id": str(alert_id),
+        "symbol": payload.symbol,
+        "side": payload.side,
+        "confidence": payload.confidence,
+        "setup_id": payload.setup_id,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }))
+
     return WebhookResponse(
         success=True,
         message="Alert received and queued for execution",
@@ -2146,6 +2277,35 @@ async def global_exception_handler(request: Request, exc: Exception):
             "detail": str(exc) if os.getenv("DEBUG") else "An error occurred"
         }
     )
+
+
+# ============================================================================
+# WebSocket endpoint
+# ============================================================================
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Real-time streaming WebSocket endpoint.
+
+    Clients subscribe to channels and receive push updates:
+      positions, trades, sentiment, status, alerts, opportunities
+    """
+    if ws_manager.client_count >= WS_MAX_CLIENTS:
+        await websocket.close(code=1008, reason="Max clients reached")
+        return
+
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await ws_manager.handle_message(websocket, data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug(f"WebSocket error: {exc}")
+    finally:
+        await ws_manager.disconnect(websocket)
 
 
 if __name__ == "__main__":

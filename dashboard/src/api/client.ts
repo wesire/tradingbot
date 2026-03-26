@@ -82,6 +82,28 @@ export interface SentimentSummary {
   providers: string[];
 }
 
+export interface SentimentSpike {
+  asset: string;
+  old_score: number;
+  new_score: number;
+  change: number;
+  direction: 'bullish' | 'bearish';
+  severity: 'minor' | 'major' | 'extreme';
+  timestamp: string;
+  sources_contributing: string[];
+}
+
+export interface SentimentSpikesResponse {
+  spikes: SentimentSpike[];
+  detector_config: {
+    spike_threshold: number;
+    window_minutes: number;
+    cooldown_minutes: number;
+    max_history: number;
+  };
+  active_cooldowns: Array<{ asset: string; cooldown_remaining_seconds: number }>;
+}
+
 export interface AdvisoryOutput {
   pair: string;
   timeframe: string;
@@ -156,6 +178,10 @@ class ApiClient {
 
   async getSentimentSummary(): Promise<SentimentSummary> {
     return this.request<SentimentSummary>('/api/sentiment/summary');
+  }
+
+  async getSentimentSpikes(): Promise<SentimentSpikesResponse> {
+    return this.request<SentimentSpikesResponse>('/api/sentiment/spikes');
   }
 
   async getAdvisory(pair: string, timeframe = '5m'): Promise<{ advisory: AdvisoryOutput; exchange_data: boolean }> {

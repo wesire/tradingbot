@@ -1,86 +1,174 @@
-import { Brain, CheckCircle, Clock, AlertTriangle } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import {
+  Brain, CheckCircle, AlertTriangle, RefreshCw, PlayCircle, Clock,
+} from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { Button } from '@/components/ui/button'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line,
+} from 'recharts'
+import { apiClient } from '@/api/client'
+import type {
+  MLModelStatus,
+  MLFeatureImportance,
+  MLBacktestMetrics,
+  MLRecentPredictions,
+} from '@/api/client'
 
-// Mock data — replace with real API calls
-const mockModelStatus = {
-  loaded: true,
-  version: 'v1.2.0',
-  lastTrained: new Date(Date.now() - 2 * 24 * 3600000).toISOString(),
-  algorithm: 'XGBoost',
-  features: 22,
-}
+// ---------------------------------------------------------------------------
+// Small helper components
+// ---------------------------------------------------------------------------
 
-const mockPredictions = [
-  { id: '1', symbol: 'BTC/USDT', signal: 'long', confidence: 0.87, timestamp: new Date(Date.now() - 300000).toISOString() },
-  { id: '2', symbol: 'ETH/USDT', signal: 'neutral', confidence: 0.61, timestamp: new Date(Date.now() - 600000).toISOString() },
-  { id: '3', symbol: 'SOL/USDT', signal: 'short', confidence: 0.74, timestamp: new Date(Date.now() - 900000).toISOString() },
-  { id: '4', symbol: 'BTC/USDT', signal: 'long', confidence: 0.92, timestamp: new Date(Date.now() - 1200000).toISOString() },
-  { id: '5', symbol: 'ETH/USDT', signal: 'long', confidence: 0.78, timestamp: new Date(Date.now() - 1500000).toISOString() },
-]
-
-const mockFeatureImportance = [
-  { feature: 'RSI(14)', importance: 0.18 },
-  { feature: 'MACD', importance: 0.15 },
-  { feature: 'BB Width', importance: 0.13 },
-  { feature: 'Vol Ratio', importance: 0.11 },
-  { feature: 'ATR', importance: 0.09 },
-  { feature: 'EMA Slope', importance: 0.08 },
-  { feature: 'ADX', importance: 0.07 },
-  { feature: 'OBV', importance: 0.06 },
-  { feature: 'Momentum', importance: 0.05 },
-  { feature: 'Sentiment', importance: 0.08 },
-].sort((a, b) => b.importance - a.importance)
-
-const mockPerformance = {
-  accuracy: 0.673,
-  precision: 0.712,
-  recall: 0.641,
-  f1: 0.675,
-  totalPredictions: 1247,
-}
-
-function SignalBadge({ signal }: { signal: string }) {
-  if (signal === 'long') return <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Long</Badge>
-  if (signal === 'short') return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Short</Badge>
-  return <Badge variant="secondary">Neutral</Badge>
-}
-
-function ConfidenceBar({ value }: { value: number }) {
-  const color = value >= 0.8 ? 'bg-green-500' : value >= 0.6 ? 'bg-yellow-500' : 'bg-red-500'
-  return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${value * 100}%` }} />
-      </div>
-      <span className="text-xs tabular-nums">{(value * 100).toFixed(0)}%</span>
-    </div>
-  )
-}
-
-function MetricCard({ label, value }: { label: string; value: string | number }) {
+function MetricCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (
     <div className="rounded-lg bg-muted/50 p-3 text-center">
       <p className="text-2xl font-bold tabular-nums">{value}</p>
       <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+      {sub && <p className="text-xs text-muted-foreground/70 mt-0.5">{sub}</p>}
     </div>
   )
 }
 
+function SignalBadge({ signal }: { signal: string }) {
+  if (signal === 'buy' || signal === 'long')
+    return <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Buy</Badge>
+  if (signal === 'sell' || signal === 'short')
+    return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Sell</Badge>
+  return <Badge variant="secondary">Hold</Badge>
+}
+
+function OutcomeBadge({ outcome }: { outcome: string }) {
+  if (outcome === 'win')
+    return <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">Win</Badge>
+  if (outcome === 'loss')
+    return <Badge className="bg-red-500/20 text-red-400 border-red-500/30 text-xs">Loss</Badge>
+  return <Badge variant="outline" className="text-xs">Pending</Badge>
+}
+
+const CHART_STYLE = {
+  backgroundColor: 'hsl(var(--card))',
+  border: '1px solid hsl(var(--border))',
+  borderRadius: '8px',
+  fontSize: '12px',
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
 export function MLInsights() {
-  const daysSinceTrained = Math.floor(
-    (Date.now() - new Date(mockModelStatus.lastTrained).getTime()) / (24 * 3600000)
-  )
+  const [modelStatus, setModelStatus] = useState<MLModelStatus | null>(null)
+  const [featureImportance, setFeatureImportance] = useState<MLFeatureImportance | null>(null)
+  const [backtestMetrics, setBacktestMetrics] = useState<MLBacktestMetrics | null>(null)
+  const [predictions, setPredictions] = useState<MLRecentPredictions | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [backtestLoading, setBacktestLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [lastRefresh, setLastRefresh] = useState(new Date())
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [status, importance, preds] = await Promise.all([
+        apiClient.getMLStatus(),
+        apiClient.getMLFeatureImportance(),
+        apiClient.getRecentMLPredictions(20),
+      ])
+      setModelStatus(status)
+      setFeatureImportance(importance)
+      setPredictions(preds)
+      setError(null)
+      setLastRefresh(new Date())
+    } catch (err) {
+      setError('Unable to load ML data. Is the backend running?')
+      console.error('MLInsights fetch error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const runBacktest = useCallback(async () => {
+    setBacktestLoading(true)
+    try {
+      const result = await apiClient.runMLBacktest({
+        start_date: '2025-01-01',
+        end_date: new Date().toISOString().slice(0, 10),
+        pair: 'BTC/USDT:USDT',
+        timeframe: '5m',
+      })
+      if (result.success) {
+        setBacktestMetrics(result.metrics)
+      }
+    } catch (err) {
+      console.error('Backtest error:', err)
+    } finally {
+      setBacktestLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchData()
+  }, [fetchData])
+
+  // Auto-run backtest on first mount only
+  const backtestRan = useState(false)
+  useEffect(() => {
+    if (!backtestRan[0]) {
+      backtestRan[1](true)
+      runBacktest()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (loading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  const topFeatures = (featureImportance?.features ?? [])
+    .slice(0, 15)
+    .map(f => ({ feature: f.name, importance: f.importance }))
+
+  const confDist = backtestMetrics?.confidence_distribution ?? []
+  const rollingAcc = (backtestMetrics?.rolling_accuracy ?? []).map(p => ({
+    t: new Date(p.window_start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    accuracy: +(p.accuracy * 100).toFixed(1),
+  }))
+
+  const cm = backtestMetrics?.confusion_matrix
+  const cmTotal = cm ? cm.tp + cm.fp + cm.tn + cm.fn : 0
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">ML Insights</h1>
-        <p className="text-muted-foreground text-sm lg:text-base">
-          Machine learning model status, predictions, and feature analysis
-        </p>
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">ML Insights</h1>
+          <p className="text-muted-foreground text-sm">
+            Model performance, feature analysis &amp; backtesting
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            <Clock className="h-3 w-3" />
+            {lastRefresh.toLocaleTimeString()}
+          </span>
+          <Button size="sm" variant="outline" onClick={fetchData} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {error}
+        </div>
+      )}
 
       {/* Model Status */}
       <Card>
@@ -93,71 +181,236 @@ export function MLInsights() {
               </CardTitle>
               <CardDescription>Current ML model information</CardDescription>
             </div>
-            {mockModelStatus.loaded ? (
+            {modelStatus?.model_loaded ? (
               <Badge className="bg-green-500/20 text-green-400 border-green-500/30 gap-1">
                 <CheckCircle className="h-3 w-3" />
                 Loaded
               </Badge>
             ) : (
-              <Badge variant="destructive">Not Loaded</Badge>
+              <Badge variant="secondary" className="gap-1">
+                <AlertTriangle className="h-3 w-3" />
+                Demo Mode
+              </Badge>
             )}
           </div>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <MetricCard label="Version" value={mockModelStatus.version} />
-            <MetricCard label="Algorithm" value={mockModelStatus.algorithm} />
-            <MetricCard label="Features" value={mockModelStatus.features} />
+            <MetricCard
+              label="Version"
+              value={modelStatus?.model_version ?? 'N/A'}
+            />
+            <MetricCard
+              label="Features"
+              value={modelStatus?.features_count ?? 0}
+            />
             <MetricCard
               label="Last Trained"
-              value={`${daysSinceTrained}d ago`}
+              value={
+                modelStatus?.last_trained
+                  ? new Date(modelStatus.last_trained).toLocaleDateString()
+                  : 'N/A'
+              }
+            />
+            <MetricCard
+              label="Training Samples"
+              value={
+                modelStatus?.training_samples
+                  ? modelStatus.training_samples.toLocaleString()
+                  : 'N/A'
+              }
             />
           </div>
-          {daysSinceTrained > 7 && (
-            <div className="mt-3 flex items-center gap-2 text-xs text-yellow-400">
-              <AlertTriangle className="h-3 w-3 shrink-0" />
-              Model was trained {daysSinceTrained} days ago. Consider retraining for best performance.
-            </div>
+          {modelStatus?.is_demo && (
+            <p className="mt-3 text-xs text-muted-foreground flex items-center gap-1">
+              <AlertTriangle className="h-3 w-3 shrink-0 text-yellow-400" />
+              No trained model loaded. Set <code className="mx-1 rounded bg-muted px-1">ML_MODEL_PATH</code> to enable real predictions. Showing demo data.
+            </p>
           )}
         </CardContent>
       </Card>
 
-      {/* Performance Metrics */}
+      {/* Performance Metrics + Run Backtest */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base lg:text-lg">Model Performance</CardTitle>
-          <CardDescription>
-            Metrics computed on {mockPerformance.totalPredictions.toLocaleString()} historical predictions
-          </CardDescription>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <CardTitle className="text-base lg:text-lg">Performance Metrics</CardTitle>
+              <CardDescription>
+                {backtestMetrics
+                  ? `Based on ${backtestMetrics.total_predictions.toLocaleString()} predictions${backtestMetrics.is_demo ? ' (demo)' : ''}`
+                  : 'Run a backtest to see metrics'}
+              </CardDescription>
+            </div>
+            <Button
+              size="sm"
+              onClick={runBacktest}
+              disabled={backtestLoading}
+              className="gap-1.5"
+            >
+              {backtestLoading ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <PlayCircle className="h-4 w-4" />
+              )}
+              {backtestLoading ? 'Running…' : 'Run Backtest'}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <MetricCard label="Accuracy" value={`${(mockPerformance.accuracy * 100).toFixed(1)}%`} />
-            <MetricCard label="Precision" value={`${(mockPerformance.precision * 100).toFixed(1)}%`} />
-            <MetricCard label="Recall" value={`${(mockPerformance.recall * 100).toFixed(1)}%`} />
-            <MetricCard label="F1 Score" value={`${(mockPerformance.f1 * 100).toFixed(1)}%`} />
-          </div>
+          {backtestMetrics ? (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <MetricCard label="Accuracy" value={`${(backtestMetrics.accuracy * 100).toFixed(1)}%`} />
+              <MetricCard label="Precision" value={`${(backtestMetrics.precision * 100).toFixed(1)}%`} />
+              <MetricCard label="Recall" value={`${(backtestMetrics.recall * 100).toFixed(1)}%`} />
+              <MetricCard label="F1 Score" value={`${(backtestMetrics.f1_score * 100).toFixed(1)}%`} />
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground text-center py-6">
+              Click "Run Backtest" to compute metrics
+            </p>
+          )}
         </CardContent>
       </Card>
+
+      {backtestMetrics && (
+        <>
+          {/* Profit Impact */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base lg:text-lg">Profit Impact</CardTitle>
+              <CardDescription>Simulated P&amp;L with ML filter ON vs OFF</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <MetricCard
+                  label="With ML Filter"
+                  value={`${backtestMetrics.profit_with_ml > 0 ? '+' : ''}${backtestMetrics.profit_with_ml.toFixed(1)}%`}
+                />
+                <MetricCard
+                  label="Without ML Filter"
+                  value={`${backtestMetrics.profit_without_ml > 0 ? '+' : ''}${backtestMetrics.profit_without_ml.toFixed(1)}%`}
+                />
+                <MetricCard
+                  label="Improvement"
+                  value={`${backtestMetrics.profit_improvement_pct > 0 ? '+' : ''}${backtestMetrics.profit_improvement_pct.toFixed(1)}%`}
+                />
+              </div>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart
+                  data={[
+                    { name: 'With ML', value: backtestMetrics.profit_with_ml },
+                    { name: 'Without ML', value: backtestMetrics.profit_without_ml },
+                  ]}
+                  margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} />
+                  <Tooltip contentStyle={CHART_STYLE} formatter={(v: number | undefined) => [`${(v ?? 0).toFixed(1)}%`, 'P&L']} />
+                  <Bar dataKey="value" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+
+          {/* Confusion Matrix */}
+          {cm && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base lg:text-lg">Confusion Matrix</CardTitle>
+                <CardDescription>Long signal classification results</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-2 max-w-xs mx-auto">
+                  {[
+                    { label: 'True Positive', value: cm.tp, bg: 'bg-green-500/20 text-green-400' },
+                    { label: 'False Positive', value: cm.fp, bg: 'bg-red-500/15 text-red-400' },
+                    { label: 'False Negative', value: cm.fn, bg: 'bg-orange-500/15 text-orange-400' },
+                    { label: 'True Negative', value: cm.tn, bg: 'bg-blue-500/15 text-blue-400' },
+                  ].map(cell => (
+                    <div key={cell.label} className={`rounded-lg p-4 text-center ${cell.bg}`}>
+                      <p className="text-2xl font-bold tabular-nums">{cell.value.toLocaleString()}</p>
+                      <p className="text-xs mt-1">{cell.label}</p>
+                      {cmTotal > 0 && (
+                        <p className="text-xs opacity-70">{((cell.value / cmTotal) * 100).toFixed(1)}%</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            {/* Rolling Accuracy */}
+            {rollingAcc.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base lg:text-lg">Rolling Accuracy</CardTitle>
+                  <CardDescription>Accuracy over time (100-trade window)</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={rollingAcc} margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="t" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                      <YAxis domain={['dataMin - 5', 100]} tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} />
+                      <Tooltip contentStyle={CHART_STYLE} formatter={(v: number | undefined) => [`${(v ?? 0).toFixed(1)}%`, 'Accuracy']} />
+                      <Line type="monotone" dataKey="accuracy" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Confidence Distribution */}
+            {confDist.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base lg:text-lg">Confidence Distribution</CardTitle>
+                  <CardDescription>Prediction confidence histogram</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={confDist} margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="bucket" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={CHART_STYLE} />
+                      <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Feature Importance */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base lg:text-lg">Feature Importance</CardTitle>
-            <CardDescription>Top 10 most influential features (SHAP values)</CardDescription>
+            <CardDescription>
+              Top 15 features
+              {featureImportance && featureImportance.method !== 'demo'
+                ? ` (${featureImportance.method === 'shap' ? 'SHAP values' : 'built-in'})`
+                : ' (demo)'}
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
+            <ResponsiveContainer width="100%" height={280}>
               <BarChart
-                data={mockFeatureImportance}
+                data={topFeatures}
                 layout="vertical"
                 margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
               >
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
                 <XAxis
                   type="number"
-                  tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
+                  tickFormatter={v => `${(v * 100).toFixed(0)}%`}
                   tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                   axisLine={false}
                   tickLine={false}
@@ -168,16 +421,11 @@ export function MLInsights() {
                   tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                   axisLine={false}
                   tickLine={false}
-                  width={64}
+                  width={80}
                 />
                 <Tooltip
-                  formatter={(v: number | undefined) => [`${((v ?? 0) * 100).toFixed(1)}%`, 'Importance'] as [string, string]}
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px',
-                    fontSize: '12px',
-                  }}
+                  contentStyle={CHART_STYLE}
+                  formatter={(v: number | undefined) => [`${((v ?? 0) * 100).toFixed(1)}%`, 'Importance']}
                 />
                 <Bar dataKey="importance" fill="hsl(var(--primary))" radius={[0, 3, 3, 0]} />
               </BarChart>
@@ -189,29 +437,40 @@ export function MLInsights() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base lg:text-lg">Recent Predictions</CardTitle>
-            <CardDescription>Latest ML signal classifications</CardDescription>
+            <CardDescription>
+              Last {predictions?.predictions.length ?? 0} ML signal classifications
+              {predictions?.is_demo ? ' (demo)' : ''}
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {mockPredictions.map((pred) => (
-                <div
-                  key={pred.id}
-                  className="flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="font-medium text-sm shrink-0">{pred.symbol}</span>
-                    <SignalBadge signal={pred.signal} />
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <ConfidenceBar value={pred.confidence} />
-                    <div className="hidden sm:flex items-center gap-1 text-xs text-muted-foreground">
-                      <Clock className="h-3 w-3" />
-                      {new Date(pred.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {(predictions?.predictions ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">
+                No predictions yet. Deploy a model to see live results.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {(predictions?.predictions ?? []).map((pred, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2 text-sm"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-medium shrink-0">{pred.pair}</span>
+                      <SignalBadge signal={pred.signal} />
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <OutcomeBadge outcome={pred.actual_outcome} />
+                      <span className="tabular-nums text-xs text-muted-foreground w-12 text-right">
+                        {(pred.confidence * 100).toFixed(0)}%
+                      </span>
+                      <span className="hidden sm:block text-xs text-muted-foreground">
+                        {new Date(pred.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

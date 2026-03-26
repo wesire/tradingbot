@@ -14,7 +14,7 @@ try:
     load_dotenv()  # loads .env from working directory if present (e.g. /app/.env in Docker)
 except ImportError:
     pass  # python-dotenv not installed, rely on container env vars
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 from pathlib import Path
@@ -1896,6 +1896,170 @@ async def get_stats():
             status_code=500,
             content={"success": False, "message": str(e)}
         )
+
+# ---------------------------------------------------------------------------
+# ML endpoints
+# ---------------------------------------------------------------------------
+
+# Lazy singleton so we don't import heavy ML deps at module load time
+_ml_backtester = None
+
+
+def _get_backtester():
+    global _ml_backtester
+    if _ml_backtester is None:
+        try:
+            from bot.ml.backtester import MLBacktester
+            _ml_backtester = MLBacktester()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Could not initialise MLBacktester: %s", exc)
+            _ml_backtester = None
+    return _ml_backtester
+
+
+@app.get("/api/ml/status")
+async def get_ml_status():
+    """
+    Return the current ML model status.
+
+    When no model is loaded, all fields use sensible defaults/null values.
+    """
+    ml_model_path = os.getenv("ML_MODEL_PATH", "")
+    model_loaded = bool(ml_model_path and os.path.exists(ml_model_path))
+
+    backtester = _get_backtester()
+    features_count = 0
+    model_version = None
+
+    if model_loaded and backtester is not None and backtester.model_loaded:
+        clf = getattr(backtester, "_classifier", None)
+        if clf is not None:
+            features_count = len(getattr(clf, "feature_names", []))
+            model_version = getattr(clf, "active_version", None)
+    else:
+        # Demo defaults
+        from bot.ml.feature_engineer import FeatureEngineer
+        features_count = len(FeatureEngineer.FEATURE_NAMES)
+
+    return {
+        "model_loaded": model_loaded,
+        "model_path": ml_model_path or None,
+        "model_version": model_version,
+        "last_trained": None,
+        "features_count": features_count,
+        "training_samples": None,
+        "is_demo": not model_loaded,
+    }
+
+
+@app.get("/api/ml/feature-importance")
+async def get_ml_feature_importance():
+    """
+    Return feature importance rankings.
+
+    Uses SHAP values when available, falls back to built-in importances,
+    then to demo data when no model is loaded.
+    """
+    backtester = _get_backtester()
+
+    if backtester is None:
+        from bot.ml.backtester import _make_demo_feature_importance
+        return {
+            "features": _make_demo_feature_importance(),
+            "method": "demo",
+            "model_version": None,
+        }
+
+    features, method = backtester.get_feature_importance()
+    model_version = None
+    if backtester.model_loaded:
+        clf = getattr(backtester, "_classifier", None)
+        if clf is not None:
+            model_version = getattr(clf, "active_version", None)
+
+    return {
+        "features": features,
+        "method": method,
+        "model_version": model_version,
+    }
+
+
+@app.post("/api/ml/backtest")
+async def run_ml_backtest(request: Request):
+    """
+    Run an ML backtest over a date range.
+
+    Request body (all fields optional)::
+
+        {
+            "start_date": "2025-01-01",
+            "end_date":   "2025-12-31",
+            "pair":       "BTC/USDT:USDT",
+            "timeframe":  "5m"
+        }
+
+    Returns comprehensive metrics.  When no model is loaded the response
+    contains realistic demo data (``is_demo: true``).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+    pair = body.get("pair", "BTC/USDT:USDT")
+    timeframe = body.get("timeframe", "5m")
+
+    backtester = _get_backtester()
+
+    if backtester is None:
+        from bot.ml.backtester import _build_demo_result
+        result = _build_demo_result(pair, timeframe, start_date, end_date)
+        return {"success": True, "metrics": result.to_dict()}
+
+    result = backtester.run(
+        ohlcv_df=None,
+        start_date=start_date,
+        end_date=end_date,
+        pair=pair,
+        timeframe=timeframe,
+    )
+    return {"success": True, "metrics": result.to_dict()}
+
+
+@app.get("/api/ml/predictions/recent")
+async def get_recent_ml_predictions(limit: int = 50):
+    """
+    Return the most recent ML predictions (demo data when no model is loaded).
+    """
+    ml_model_path = os.getenv("ML_MODEL_PATH", "")
+    model_loaded = bool(ml_model_path and os.path.exists(ml_model_path))
+
+    if not model_loaded:
+        import random
+        rng = random.Random(42)
+        signals = ["buy", "sell", "hold"]
+        outcomes = ["win", "loss", "pending"]
+        demo_predictions = []
+        now = datetime.now(timezone.utc)
+        from bot.ml.feature_engineer import FeatureEngineer
+        feat_count = len(FeatureEngineer.FEATURE_NAMES)
+        for i in range(min(limit, 20)):
+            ts = (now - timedelta(minutes=5 * (i + 1))).strftime("%Y-%m-%dT%H:%M:%SZ")
+            demo_predictions.append({
+                "timestamp": ts,
+                "pair": "BTC/USDT:USDT",
+                "signal": rng.choice(signals),
+                "confidence": round(rng.uniform(0.50, 0.95), 3),
+                "actual_outcome": rng.choice(outcomes),
+                "features_used": feat_count,
+            })
+        return {"predictions": demo_predictions, "total": len(demo_predictions), "is_demo": True}
+
+    # Real model: placeholder – extend with a live prediction log if available
+    return {"predictions": [], "total": 0, "is_demo": False}
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

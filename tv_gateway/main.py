@@ -26,7 +26,15 @@ from tv_gateway.ip_filter import IPFilter
 from tv_gateway.circuit_breaker import CircuitBreaker, CircuitState
 from tv_gateway.structured_logging import audit_logger
 from bot.config.default_config import config
-from bot.sentiment import MockSentimentProvider, SentimentAggregator, SentimentStorage
+from bot.sentiment import (
+    MockSentimentProvider,
+    SentimentAggregator,
+    SentimentStorage,
+    CryptoPanicSentimentProvider,
+    RedditSentimentProvider,
+    TwitterSentimentProvider,
+    FearGreedProvider,
+)
 from bot.ai_advisor import AIAdvisor
 from bot.opportunities import OpportunityScorer
 from bot.strategy import registry
@@ -201,10 +209,86 @@ webhook_auth = WebhookAuth(
     max_age_seconds=config.TV_MAX_ALERT_AGE_SECONDS
 )
 
-# Initialize sentiment components
-sentiment_provider = MockSentimentProvider(base_sentiment=0.1)
-sentiment_aggregator = SentimentAggregator([sentiment_provider])
+# Initialize sentiment components — use real providers when API keys are available
+def _build_sentiment_providers():
+    """Build list of sentiment providers based on configured API keys."""
+    providers = []
+    weights = {}
+
+    cryptopanic_key = os.getenv("CRYPTOPANIC_API_KEY", "")
+    twitter_token = os.getenv("TWITTER_BEARER_TOKEN", "")
+
+    if cryptopanic_key and cryptopanic_key not in ("your_key_here", ""):
+        try:
+            providers.append(CryptoPanicSentimentProvider(api_key=cryptopanic_key))
+            weights["CryptoPanicSentimentProvider"] = 0.35
+            logger.info("CryptoPanic sentiment provider enabled")
+        except Exception as e:
+            logger.warning(f"Failed to init CryptoPanic provider: {e}")
+
+    try:
+        providers.append(RedditSentimentProvider())
+        weights["RedditSentimentProvider"] = 0.25
+        logger.info("Reddit sentiment provider enabled")
+    except Exception as e:
+        logger.warning(f"Failed to init Reddit provider: {e}")
+
+    if twitter_token and twitter_token not in ("your_bearer_token_here", ""):
+        try:
+            providers.append(TwitterSentimentProvider(bearer_token=twitter_token))
+            weights["TwitterSentimentProvider"] = 0.20
+            logger.info("Twitter/X sentiment provider enabled")
+        except Exception as e:
+            logger.warning(f"Failed to init Twitter provider: {e}")
+
+    try:
+        providers.append(FearGreedProvider())
+        weights["FearGreedProvider"] = 0.20
+        logger.info("Fear & Greed sentiment provider enabled")
+    except Exception as e:
+        logger.warning(f"Failed to init Fear & Greed provider: {e}")
+
+    if not providers:
+        logger.warning("No real sentiment providers configured — using mock provider")
+        providers.append(MockSentimentProvider(base_sentiment=0.1))
+        weights = {}
+
+    return providers, weights
+
+
+_sentiment_providers, _sentiment_weights = _build_sentiment_providers()
+sentiment_aggregator = SentimentAggregator(_sentiment_providers, weights=_sentiment_weights)
 sentiment_storage = SentimentStorage()
+
+# Initialize broker adapter lazily — only when exchange credentials are configured
+_exchange_api_key = os.getenv("EXCHANGE_API_KEY", "")
+_exchange_api_secret = os.getenv("EXCHANGE_API_SECRET", "")
+_exchange_name = os.getenv("EXCHANGE_NAME", "binance")
+_exchange_sandbox = os.getenv("EXCHANGE_SANDBOX", "true").lower() == "true"
+broker_adapter = None
+
+if (
+    _exchange_api_key
+    and _exchange_api_secret
+    and _exchange_api_key not in ("your_api_key_here", "")
+    and _exchange_api_secret not in ("your_api_secret_here", "")
+):
+    try:
+        from bot.execution.broker_adapter import BrokerAdapter
+        broker_adapter = BrokerAdapter(
+            exchange_name=_exchange_name,
+            api_key=_exchange_api_key,
+            api_secret=_exchange_api_secret,
+            sandbox=_exchange_sandbox,
+        )
+        logger.info(f"Exchange adapter initialized: {_exchange_name} (sandbox={_exchange_sandbox})")
+    except Exception as e:
+        logger.warning(f"Failed to initialize exchange adapter: {e}. Exchange data will be unavailable.")
+else:
+    logger.info("No exchange API credentials configured — exchange data endpoints will return empty data")
+
+# Mutable bot control state (toggled via API)
+bot_paused = False
 
 # Initialize AI advisor (advisory only)
 ai_advisor = AIAdvisor()
@@ -1106,6 +1190,240 @@ async def admin_get_config(authorized: bool = Depends(verify_admin_token)):
 # ============================================================================
 
 
+# ============================================================================
+# Dashboard API Endpoints
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Technical indicator helpers used by /api/advisor and /api/opportunities
+# ---------------------------------------------------------------------------
+
+def _compute_rsi(prices: list, period: int = 14) -> float:
+    """Compute a simple RSI from a list of close prices."""
+    if len(prices) < period + 1:
+        return 50.0
+    gains = [max(prices[i] - prices[i - 1], 0.0) for i in range(1, len(prices))]
+    losses = [max(prices[i - 1] - prices[i], 0.0) for i in range(1, len(prices))]
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_gain == 0.0 and avg_loss == 0.0:
+        return 50.0
+    if avg_loss == 0.0:
+        return 100.0
+    return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+
+
+def _compute_ema(prices: list, period: int) -> float:
+    """Compute an EMA over *prices* with the given *period*."""
+    if not prices:
+        return 0.0
+    if len(prices) < period:
+        return prices[-1]
+    k = 2.0 / (period + 1)
+    ema = prices[0]
+    for p in prices[1:]:
+        ema = p * k + ema * (1.0 - k)
+    return ema
+
+
+async def get_bot_status():
+    """Get current bot status including mode, uptime, and configuration."""
+    uptime = (datetime.now() - service_start_time).total_seconds()
+    mode = "live" if RUNMODE not in ("dry-run", "dry_run") else "dry-run"
+    status_val = "paused" if bot_paused else "running"
+
+    exchange_configured = broker_adapter is not None
+    openai_configured = bool(os.getenv("OPENAI_API_KEY", ""))
+
+    sentiment_sources = []
+    for p in _sentiment_providers:
+        sentiment_sources.append(type(p).__name__)
+
+    return {
+        "success": True,
+        "status": status_val,
+        "mode": mode,
+        "uptime": uptime,
+        "last_heartbeat": datetime.now().isoformat(),
+        "exchange_connected": exchange_configured,
+        "exchange_name": _exchange_name if exchange_configured else None,
+        "exchange_sandbox": _exchange_sandbox,
+        "openai_configured": openai_configured,
+        "sentiment_sources": sentiment_sources,
+    }
+
+
+@app.get("/api/positions")
+async def get_positions():
+    """Get open positions from the exchange."""
+    if broker_adapter is None:
+        return {
+            "success": True,
+            "positions": [],
+            "message": "No exchange connected. Add EXCHANGE_API_KEY and EXCHANGE_API_SECRET to .env to see real positions.",
+            "exchange_configured": False,
+        }
+    try:
+        enabled_pairs = registry.list_enabled_pairs()
+        positions = []
+        for pair in enabled_pairs:
+            try:
+                ticker = broker_adapter.fetch_ticker(pair)
+                current_price = ticker.get("last", 0.0) or 0.0
+                open_orders = broker_adapter.fetch_open_orders(pair)
+                for order in open_orders:
+                    entry_price = float(order.get("price") or order.get("average") or current_price)
+                    size = float(order.get("amount", 0))
+                    side_raw = order.get("side", "buy")
+                    side = "long" if side_raw == "buy" else "short"
+                    pnl = (current_price - entry_price) * size if side == "long" else (entry_price - current_price) * size
+                    pnl_pct = ((current_price / entry_price) - 1) * 100 if entry_price > 0 else 0.0
+                    if side == "short":
+                        pnl_pct = -pnl_pct
+                    positions.append({
+                        "symbol": pair,
+                        "side": side,
+                        "size": size,
+                        "entry_price": entry_price,
+                        "current_price": current_price,
+                        "pnl": round(pnl, 4),
+                        "pnl_percentage": round(pnl_pct, 4),
+                        "leverage": 1,
+                    })
+            except Exception as pair_err:
+                logger.debug(f"Could not fetch positions for {pair}: {pair_err}")
+        return {"success": True, "positions": positions, "exchange_configured": True}
+    except Exception as e:
+        logger.error(f"Error fetching positions: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+
+
+@app.get("/api/trades")
+async def get_trades(limit: int = 50):
+    """Get recent trade history from alert storage."""
+    try:
+        alerts = alert_storage.list_alerts(limit=limit, status="executed")
+        trades = []
+        for alert in alerts:
+            alert_dict = alert.to_dict()
+            trades.append({
+                "id": str(alert_dict.get("id", "")),
+                "timestamp": alert_dict.get("received_at", ""),
+                "symbol": alert_dict.get("symbol", ""),
+                "side": alert_dict.get("side", "buy"),
+                "size": float(alert_dict.get("size", 0)),
+                "price": float(alert_dict.get("price", 0)),
+                "status": "closed" if alert_dict.get("status") == "executed" else "open",
+            })
+        return {"success": True, "trades": trades, "count": len(trades)}
+    except Exception as e:
+        logger.error(f"Error fetching trades: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+
+
+@app.get("/api/pnl-history")
+async def get_pnl_history(period: str = "24h"):
+    """
+    Get PnL history computed from executed alerts.
+    Returns a time-series of realized PnL data points.
+    """
+    try:
+        period_hours = {"1h": 1, "4h": 4, "24h": 24, "7d": 168, "30d": 720}.get(period, 24)
+        alerts = alert_storage.list_alerts(limit=500, status="executed")
+
+        pnl_by_hour: dict = {}
+        cumulative = 0.0
+        for alert in reversed(alerts):
+            alert_dict = alert.to_dict()
+            ts_raw = alert_dict.get("received_at", "")
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")) if ts_raw else None
+            except Exception:
+                ts = None
+
+            if ts is None:
+                continue
+
+            hour_key = ts.strftime("%Y-%m-%dT%H:00:00")
+            realized = float(alert_dict.get("pnl", 0) or 0)
+            cumulative += realized
+            if hour_key not in pnl_by_hour:
+                pnl_by_hour[hour_key] = {"realized": 0.0, "cumulative": cumulative}
+            pnl_by_hour[hour_key]["realized"] += realized
+            pnl_by_hour[hour_key]["cumulative"] = cumulative
+
+        history = [
+            {
+                "timestamp": k,
+                "realized_pnl": round(v["realized"], 4),
+                "unrealized_pnl": 0.0,
+                "total_pnl": round(v["cumulative"], 4),
+            }
+            for k, v in sorted(pnl_by_hour.items())
+        ][-period_hours:]
+
+        return {"success": True, "period": period, "data": history}
+    except Exception as e:
+        logger.error(f"Error fetching PnL history: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+
+
+@app.post("/api/toggle-mode")
+async def toggle_mode(request: Request):
+    """Toggle trading mode between dry-run and live."""
+    global RUNMODE
+    try:
+        body = await request.json()
+        new_mode = body.get("mode", "dry-run")
+        if new_mode not in ("dry-run", "live"):
+            return JSONResponse(status_code=400, content={"success": False, "message": "Invalid mode"})
+        if new_mode == "live" and os.getenv("CONFIRM_LIVE_TRADING", "") != "YES":
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "message": "Set CONFIRM_LIVE_TRADING=YES in .env to enable live mode"},
+            )
+        RUNMODE = new_mode
+        logger.info(f"Trading mode toggled to: {new_mode}")
+        return {"success": True, "mode": new_mode}
+    except Exception as e:
+        logger.error(f"Error toggling mode: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+
+
+@app.post("/api/emergency-stop")
+async def emergency_stop():
+    """Emergency stop — pause bot and disable execution."""
+    global bot_paused, execution_enabled
+    bot_paused = True
+    execution_enabled = False
+    logger.warning("EMERGENCY STOP executed via API")
+    audit_logger.info("EMERGENCY_STOP", extra={"action": "emergency_stop"})
+    return {"success": True, "message": "Emergency stop executed. Bot paused and execution disabled."}
+
+
+@app.post("/api/pause")
+async def pause_bot():
+    """Pause the bot (stop processing new signals)."""
+    global bot_paused
+    bot_paused = True
+    logger.info("Bot paused via API")
+    return {"success": True, "status": "paused"}
+
+
+@app.post("/api/resume")
+async def resume_bot():
+    """Resume the bot."""
+    global bot_paused
+    bot_paused = False
+    logger.info("Bot resumed via API")
+    return {"success": True, "status": "running"}
+
+
+# ============================================================================
+# End Dashboard API Endpoints
+# ============================================================================
+
+
 @app.get("/api/sentiment/summary")
 async def get_sentiment_summary():
     """
@@ -1131,7 +1449,8 @@ async def get_sentiment_summary():
         return {
             "success": True,
             "overview": overview,
-            "assets": {k: v.to_dict() for k, v in sentiments.items()}
+            "assets": {k: v.to_dict() for k, v in sentiments.items()},
+            "providers": [type(p).__name__ for p in _sentiment_providers],
         }
     except Exception as e:
         logger.error(f"Error getting sentiment summary: {e}")
@@ -1186,7 +1505,7 @@ async def get_sentiment_for_asset(asset: str, hours: int = 24):
         )
 
 
-@app.get("/api/advisor/{pair}")
+@app.get("/api/advisor/{pair:path}")
 async def get_advisor_for_pair(pair: str, timeframe: str = "5m"):
     """
     Get AI advisor guidance for a specific pair.
@@ -1207,27 +1526,52 @@ async def get_advisor_for_pair(pair: str, timeframe: str = "5m"):
         # Extract base asset
         base_asset = pair.split('/')[0] if '/' in pair else pair
         
-        # Mock OHLCV and technical data (in production, fetch from exchange/strategy)
-        ohlcv_snapshot = {
-            "close": 45000.0,
-            "volume": 1000000.0
-        }
-        
-        technical_signals = {
-            "rsi": 42.0,
-            "price_vs_ema": True,
-            "volume_above_avg": True,
-            "filters_passed": True,
-            "atr_status": "normal",
-            "atr": 200.0
-        }
-        
-        regime_data = {
-            "bullish": True,
-            "bearish": False,
-            "neutral": False,
-            "adx": 28.0
-        }
+        # Fetch real OHLCV data from exchange if available, otherwise use placeholder
+        exchange_available = broker_adapter is not None
+        if exchange_available:
+            try:
+                ticker = broker_adapter.fetch_ticker(pair)
+                close_price = float(ticker.get("last") or ticker.get("close") or 45000.0)
+                volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 1000000.0)
+
+                ohlcv_data = broker_adapter.fetch_ohlcv(pair, timeframe=timeframe, limit=50)
+                closes = [c[4] for c in ohlcv_data if c[4]]
+                volumes = [c[5] for c in ohlcv_data if c[5]]
+
+                rsi = _compute_rsi(closes) if closes else 50.0
+                ema21 = _compute_ema(closes, 21) if closes else close_price
+                avg_volume = (sum(volumes) / len(volumes)) if volumes else volume
+
+                ohlcv_snapshot = {"close": close_price, "volume": volume}
+                technical_signals = {
+                    "rsi": round(rsi, 2),
+                    "price_vs_ema": close_price > ema21,
+                    "volume_above_avg": volume > avg_volume,
+                    "filters_passed": True,
+                    "atr_status": "normal",
+                    "atr": round(abs(closes[-1] - closes[-2]) if len(closes) >= 2 else 200.0, 4),
+                }
+                regime_data = {
+                    "bullish": close_price > ema21,
+                    "bearish": close_price < ema21,
+                    "neutral": abs(close_price - ema21) / ema21 < 0.005 if ema21 else False,
+                    "adx": 25.0,  # ADX requires more complex computation; placeholder
+                }
+            except Exception as ex_err:
+                logger.warning(f"Exchange data fetch failed for {pair}: {ex_err} — using defaults")
+                exchange_available = False
+
+        if not exchange_available:
+            ohlcv_snapshot = {"close": 45000.0, "volume": 1000000.0}
+            technical_signals = {
+                "rsi": 42.0,
+                "price_vs_ema": True,
+                "volume_above_avg": True,
+                "filters_passed": True,
+                "atr_status": "normal",
+                "atr": 200.0,
+            }
+            regime_data = {"bullish": True, "bearish": False, "neutral": False, "adx": 28.0}
         
         # Get sentiment
         sentiment = sentiment_aggregator.aggregate_sentiment(base_asset)
@@ -1246,6 +1590,7 @@ async def get_advisor_for_pair(pair: str, timeframe: str = "5m"):
         return {
             "success": True,
             "advisory": advisory.to_dict(),
+            "exchange_data": exchange_available,
             "warning": "ADVISORY ONLY - No orders will be placed based on this guidance"
         }
     except Exception as e:
@@ -1279,33 +1624,62 @@ async def get_opportunities(
         # Get enabled pairs from registry
         enabled_pairs = registry.list_enabled_pairs()
         
-        # Build pairs data (mock data for now)
+        # Build pairs data — use real exchange data when available
         pairs_data = {}
         
         for pair in enabled_pairs:
             base_asset = pair.split('/')[0]
             
-            # Mock technical and regime data
+            technical = {
+                'rsi': 45.0,
+                'price_vs_ema': True,
+                'volume_above_avg': True,
+                'filters_passed': True,
+                'close': 45000.0,
+                'atr': 200.0,
+            }
+            regime = {'bullish': True, 'bearish': False, 'adx': 28.0}
+
+            if broker_adapter is not None:
+                try:
+                    ticker = broker_adapter.fetch_ticker(pair)
+                    close_price = float(ticker.get("last") or ticker.get("close") or 45000.0)
+                    volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 1000000.0)
+
+                    ohlcv_data = broker_adapter.fetch_ohlcv(pair, timeframe=timeframe, limit=50)
+                    closes = [c[4] for c in ohlcv_data if c[4]]
+                    volumes = [c[5] for c in ohlcv_data if c[5]]
+
+                    rsi_val = _compute_rsi(closes) if closes else 50.0
+                    ema21 = _compute_ema(closes, 21) if closes else close_price
+                    avg_vol = (sum(volumes) / len(volumes)) if volumes else volume
+                    atr_val = abs(closes[-1] - closes[-2]) if len(closes) >= 2 else 200.0
+
+                    technical = {
+                        'rsi': round(rsi_val, 2),
+                        'price_vs_ema': close_price > ema21,
+                        'volume_above_avg': volume > avg_vol,
+                        'filters_passed': True,
+                        'close': close_price,
+                        'atr': round(atr_val, 4),
+                    }
+                    regime = {
+                        'bullish': close_price > ema21,
+                        'bearish': close_price < ema21,
+                        'adx': 25.0,
+                    }
+                except Exception as pair_err:
+                    logger.debug(f"Exchange data unavailable for {pair}: {pair_err}")
+
             pairs_data[pair] = {
                 'timeframe': timeframe,
-                'technical': {
-                    'rsi': 45.0,
-                    'price_vs_ema': True,
-                    'volume_above_avg': True,
-                    'filters_passed': True,
-                    'close': 45000.0,
-                    'atr': 200.0
-                },
-                'regime': {
-                    'bullish': True,
-                    'bearish': False,
-                    'adx': 28.0
-                },
+                'technical': technical,
+                'regime': regime,
                 'sentiment': None,
                 'liquidity': {
                     'atr_status': 'normal',
-                    'volume_consistent': True
-                }
+                    'volume_consistent': True,
+                },
             }
             
             # Get sentiment if available
@@ -1329,6 +1703,7 @@ async def get_opportunities(
         return {
             "success": True,
             "count": len(opportunities),
+            "exchange_data": broker_adapter is not None,
             "opportunities": [o.to_dict() for o in opportunities],
             "filters": {
                 "min_confidence": min_confidence,
@@ -1457,95 +1832,6 @@ async def get_stats():
             status_code=500,
             content={"success": False, "message": str(e)}
         )
-
-
-@app.get("/api/opportunities")
-async def get_opportunities(
-    min_confidence: float = 0.3,
-    max_results: int = 10,
-    side: Optional[str] = None,
-    timeframe: str = "5m"
-):
-    """
-    Get ranked list of trading opportunities.
-    
-    Args:
-        min_confidence: Minimum confidence threshold (0-1)
-        max_results: Maximum number of results to return
-        side: Optional filter for "long" or "short"
-        timeframe: Timeframe for analysis
-        
-    Returns:
-        List of trading opportunities
-    """
-    try:
-        # Get enabled pairs from registry
-        enabled_pairs = registry.list_enabled_pairs()
-        
-        # Build pairs data (mock data for now)
-        pairs_data = {}
-        
-        for pair in enabled_pairs:
-            base_asset = pair.split('/')[0]
-            
-            # Mock technical and regime data
-            pairs_data[pair] = {
-                'timeframe': timeframe,
-                'technical': {
-                    'rsi': 45.0,
-                    'price_vs_ema': True,
-                    'volume_above_avg': True,
-                    'filters_passed': True,
-                    'close': 45000.0,
-                    'atr': 200.0
-                },
-                'regime': {
-                    'bullish': True,
-                    'bearish': False,
-                    'adx': 28.0
-                },
-                'sentiment': None,
-                'liquidity': {
-                    'atr_status': 'normal',
-                    'volume_consistent': True
-                }
-            }
-            
-            # Get sentiment if available
-            sentiment = sentiment_aggregator.aggregate_sentiment(base_asset)
-            if sentiment:
-                pairs_data[pair]['sentiment'] = sentiment.to_dict()
-        
-        # Score opportunities
-        opportunities = opportunity_scorer.score_multiple(pairs_data)
-        
-        # Filter by confidence
-        opportunities = [o for o in opportunities if o.confidence >= min_confidence]
-        
-        # Filter by side if specified
-        if side:
-            opportunities = [o for o in opportunities if o.side == side.lower()]
-        
-        # Limit results
-        opportunities = opportunities[:max_results]
-        
-        return {
-            "success": True,
-            "count": len(opportunities),
-            "opportunities": [o.to_dict() for o in opportunities],
-            "filters": {
-                "min_confidence": min_confidence,
-                "side": side,
-                "timeframe": timeframe
-            }
-        }
-    except Exception as e:
-        logger.error(f"Error getting opportunities: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

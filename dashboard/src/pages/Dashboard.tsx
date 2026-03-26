@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { Activity, DollarSign, TrendingUp, Zap } from "lucide-react"
+import { useEffect, useState, useCallback } from "react"
+import { Activity, DollarSign, TrendingUp, Zap, RefreshCw, AlertCircle } from "lucide-react"
 import { StatusCard } from "@/components/StatusCard"
 import { TradeTable } from "@/components/TradeTable"
 import { PnLChart } from "@/components/PnLChart"
@@ -8,128 +8,85 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import type { BotStatus, Position, Trade, WebhookEvent, PnLData } from "@/api/client"
+import { apiClient } from "@/api/client"
+import type { BotStatus, Position, Trade, PnLData } from "@/api/client"
 
-// Mock data for demo
-const mockStatus: BotStatus = {
-  status: 'running',
-  mode: 'dry-run',
-  uptime: 86400,
-  last_heartbeat: new Date().toISOString(),
-}
-
-const mockPositions: Position[] = [
-  {
-    symbol: 'BTC/USDT',
-    side: 'long',
-    size: 0.5,
-    entry_price: 45000,
-    current_price: 46200,
-    pnl: 600,
-    pnl_percentage: 2.67,
-    leverage: 3,
-  },
-  {
-    symbol: 'ETH/USDT',
-    side: 'short',
-    size: 5,
-    entry_price: 2500,
-    current_price: 2450,
-    pnl: 250,
-    pnl_percentage: 2.0,
-    leverage: 2,
-  },
-]
-
-const mockTrades: Trade[] = [
-  {
-    id: '1',
-    timestamp: new Date(Date.now() - 3600000).toISOString(),
-    symbol: 'BTC/USDT',
-    side: 'buy',
-    size: 0.5,
-    price: 45000,
-    status: 'open',
-  },
-  {
-    id: '2',
-    timestamp: new Date(Date.now() - 7200000).toISOString(),
-    symbol: 'ETH/USDT',
-    side: 'sell',
-    size: 5,
-    price: 2500,
-    status: 'open',
-  },
-  {
-    id: '3',
-    timestamp: new Date(Date.now() - 10800000).toISOString(),
-    symbol: 'SOL/USDT',
-    side: 'buy',
-    size: 20,
-    price: 100,
-    pnl: -50,
-    status: 'closed',
-  },
-]
-
-const mockWebhookEvents: WebhookEvent[] = [
-  {
-    id: '1',
-    timestamp: new Date(Date.now() - 1800000).toISOString(),
-    action: 'buy',
-    symbol: 'BTC/USDT',
-    details: { leverage: 3, stop_loss: 44000 },
-    processed: true,
-  },
-  {
-    id: '2',
-    timestamp: new Date(Date.now() - 3600000).toISOString(),
-    action: 'sell',
-    symbol: 'ETH/USDT',
-    details: { leverage: 2, take_profit: 2400 },
-    processed: true,
-  },
-]
-
-const mockPnLData: PnLData[] = Array.from({ length: 24 }, (_, i) => ({
-  timestamp: new Date(Date.now() - (23 - i) * 3600000).toISOString(),
-  realized_pnl: Math.random() * 200 - 50,
-  unrealized_pnl: Math.random() * 300 - 100,
-  total_pnl: Math.random() * 400 - 100,
-}))
+const REFRESH_INTERVAL_MS = 30_000 // 30 seconds
 
 export function Dashboard() {
-  const [status] = useState<BotStatus>(mockStatus)
-  const [positions] = useState<Position[]>(mockPositions)
-  const [trades] = useState<Trade[]>(mockTrades)
-  const [webhookEvents] = useState<WebhookEvent[]>(mockWebhookEvents)
-  const [pnlData] = useState<PnLData[]>(mockPnLData)
+  const [status, setStatus] = useState<BotStatus | null>(null)
+  const [positions, setPositions] = useState<Position[]>([])
+  const [trades, setTrades] = useState<Trade[]>([])
+  const [pnlData, setPnlData] = useState<PnLData[]>([])
   const [activeTab, setActiveTab] = useState('overview')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
 
-  useEffect(() => {
-    // In production, fetch real data from API
-    // fetchData()
+  const fetchData = useCallback(async () => {
+    try {
+      const [statusData, positionsData, tradesData, pnlDataResult] = await Promise.allSettled([
+        apiClient.getBotStatus(),
+        apiClient.getPositions(),
+        apiClient.getTrades(50),
+        apiClient.getPnLHistory('24h'),
+      ])
+
+      if (statusData.status === 'fulfilled') setStatus(statusData.value)
+      if (positionsData.status === 'fulfilled') setPositions(positionsData.value)
+      if (tradesData.status === 'fulfilled') setTrades(tradesData.value)
+      if (pnlDataResult.status === 'fulfilled') setPnlData(pnlDataResult.value)
+
+      setError(null)
+      setLastRefresh(new Date())
+    } catch (err) {
+      setError('Failed to load dashboard data. Is the backend running?')
+      console.error('Dashboard fetch error:', err)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
+  useEffect(() => {
+    fetchData()
+    const interval = setInterval(fetchData, REFRESH_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [fetchData])
+
   const totalPnL = positions.reduce((sum, p) => sum + p.pnl, 0)
-  const totalPnLPercentage = positions.length > 0 
-    ? positions.reduce((sum, p) => sum + p.pnl_percentage, 0) / positions.length 
+  const totalPnLPercentage = positions.length > 0
+    ? positions.reduce((sum, p) => sum + p.pnl_percentage, 0) / positions.length
     : 0
+
+  const uptimeHours = status ? Math.floor(status.uptime / 3600) : 0
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground text-sm lg:text-base">
-          Real-time overview of your trading bot performance
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground text-sm lg:text-base">
+            Real-time overview of your trading bot performance
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          {lastRefresh.toLocaleTimeString()}
+        </div>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-500">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {error}
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatusCard
           title="Bot Status"
-          value={status.status.toUpperCase()}
-          subtitle={`Mode: ${status.mode}`}
+          value={status ? status.status.toUpperCase() : '—'}
+          subtitle={status ? `Mode: ${status.mode}` : 'Loading…'}
           icon={Activity}
         />
         <StatusCard
@@ -146,11 +103,18 @@ export function Dashboard() {
         />
         <StatusCard
           title="Uptime"
-          value={`${Math.floor(status.uptime / 3600)}h`}
-          subtitle={`Last heartbeat: ${new Date(status.last_heartbeat).toLocaleTimeString()}`}
+          value={`${uptimeHours}h`}
+          subtitle={status ? `Last heartbeat: ${new Date(status.last_heartbeat).toLocaleTimeString()}` : 'Loading…'}
           icon={Zap}
         />
       </div>
+
+      {status && !status.exchange_connected && (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-sm text-blue-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          No exchange connected. Add <code className="font-mono">EXCHANGE_API_KEY</code> and <code className="font-mono">EXCHANGE_API_SECRET</code> to your <code className="font-mono">.env</code> to see live positions.
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -179,9 +143,6 @@ export function Dashboard() {
           </TabsTrigger>
           <TabsTrigger value="trades" active={activeTab === 'trades'}>
             Trade History
-          </TabsTrigger>
-          <TabsTrigger value="webhooks" active={activeTab === 'webhooks'}>
-            Webhook Events
           </TabsTrigger>
         </TabsList>
 
@@ -220,7 +181,7 @@ export function Dashboard() {
                   {positions.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="text-center text-muted-foreground">
-                        No open positions
+                        {loading ? 'Loading positions…' : 'No open positions'}
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -257,60 +218,11 @@ export function Dashboard() {
               <CardDescription>All executed trades</CardDescription>
             </CardHeader>
             <CardContent>
-              <TradeTable trades={trades} />
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="webhooks" active={activeTab === 'webhooks'}>
-          <Card>
-            <CardHeader>
-              <CardTitle>Webhook Events</CardTitle>
-              <CardDescription>Recent webhook signals received</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Action</TableHead>
-                    <TableHead>Symbol</TableHead>
-                    <TableHead>Details</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {webhookEvents.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="text-center text-muted-foreground">
-                        No webhook events
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    webhookEvents.map((event) => (
-                      <TableRow key={event.id}>
-                        <TableCell className="font-mono text-sm">
-                          {new Date(event.timestamp).toLocaleString()}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={event.action === 'buy' ? 'success' : 'destructive'}>
-                            {event.action.toUpperCase()}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="font-medium">{event.symbol}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {JSON.stringify(event.details)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={event.processed ? 'success' : 'warning'}>
-                            {event.processed ? 'Processed' : 'Pending'}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
+              {loading ? (
+                <p className="text-center text-muted-foreground py-4">Loading trades…</p>
+              ) : (
+                <TradeTable trades={trades} />
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -318,3 +230,4 @@ export function Dashboard() {
     </div>
   )
 }
+

@@ -5,6 +5,11 @@ export interface BotStatus {
   mode: 'dry-run' | 'live';
   uptime: number;
   last_heartbeat: string;
+  exchange_connected?: boolean;
+  exchange_name?: string | null;
+  exchange_sandbox?: boolean;
+  openai_configured?: boolean;
+  sentiment_sources?: string[];
 }
 
 export interface Position {
@@ -57,6 +62,36 @@ export interface PnLData {
   total_pnl: number;
 }
 
+export interface SentimentSummary {
+  overview: {
+    combined_score: number;
+    trend: string;
+    updated_at: string;
+  };
+  assets: Record<string, {
+    score: number;
+    trend: string;
+    confidence: number;
+    updated_at: string;
+  }>;
+  providers: string[];
+}
+
+export interface AdvisoryOutput {
+  pair: string;
+  timeframe: string;
+  bias: string;
+  confidence: number;
+  rationale: string[];
+  risks: string[];
+  suggested_action: string;
+  disclaimer: string;
+  generated_at: string;
+  technical_score: number;
+  regime_alignment: number;
+  sentiment_score: number;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -81,27 +116,48 @@ class ApiClient {
   }
 
   async getBotStatus(): Promise<BotStatus> {
-    return this.request<BotStatus>('/api/status');
+    const data = await this.request<{ success: boolean } & BotStatus>('/api/status');
+    return data;
   }
 
   async getPositions(): Promise<Position[]> {
-    return this.request<Position[]>('/api/positions');
+    const data = await this.request<{ success: boolean; positions: Position[] }>('/api/positions');
+    return data.positions ?? [];
   }
 
   async getTrades(limit = 50): Promise<Trade[]> {
-    return this.request<Trade[]>(`/api/trades?limit=${limit}`);
+    const data = await this.request<{ success: boolean; trades: Trade[] }>(`/api/trades?limit=${limit}`);
+    return data.trades ?? [];
   }
 
   async getWebhookEvents(limit = 50): Promise<WebhookEvent[]> {
-    return this.request<WebhookEvent[]>(`/api/webhook-events?limit=${limit}`);
+    const data = await this.request<{ success: boolean; alerts: WebhookEvent[] }>(`/alerts?limit=${limit}`);
+    return (data.alerts ?? []).map((a: WebhookEvent) => ({
+      ...a,
+      timestamp: a.timestamp ?? new Date().toISOString(),
+      action: a.action ?? 'unknown',
+    }));
   }
 
   async getOpportunities(): Promise<Opportunity[]> {
-    return this.request<Opportunity[]>('/api/opportunities');
+    const data = await this.request<{ success: boolean; opportunities: Opportunity[] }>('/api/opportunities');
+    return data.opportunities ?? [];
   }
 
   async getPnLHistory(period = '24h'): Promise<PnLData[]> {
-    return this.request<PnLData[]>(`/api/pnl-history?period=${period}`);
+    const data = await this.request<{ success: boolean; data: PnLData[] }>(`/api/pnl-history?period=${period}`);
+    return data.data ?? [];
+  }
+
+  async getSentimentSummary(): Promise<SentimentSummary> {
+    return this.request<SentimentSummary>('/api/sentiment/summary');
+  }
+
+  async getAdvisory(pair: string, timeframe = '5m'): Promise<{ advisory: AdvisoryOutput; exchange_data: boolean }> {
+    const encodedPair = encodeURIComponent(pair);
+    return this.request<{ advisory: AdvisoryOutput; exchange_data: boolean }>(
+      `/api/advisor/${encodedPair}?timeframe=${timeframe}`
+    );
   }
 
   async toggleMode(mode: 'dry-run' | 'live'): Promise<{ success: boolean }> {

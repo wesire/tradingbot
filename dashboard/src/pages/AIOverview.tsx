@@ -1,68 +1,64 @@
-import { Brain, TrendingUp, AlertTriangle, Info } from "lucide-react"
+import { useEffect, useState, useCallback } from "react"
+import { Brain, TrendingUp, AlertTriangle, Info, RefreshCw, AlertCircle } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { apiClient } from "@/api/client"
+import type { AdvisoryOutput } from "@/api/client"
+
+const DEFAULT_PAIR = 'BTC/USDT:USDT'
+const REFRESH_INTERVAL_MS = 60_000
 
 export function AIOverview() {
-  // Mock AI guidance data
-  const aiGuidance = {
-    overall_sentiment: 'bullish',
-    confidence: 78,
-    recommendations: [
-      {
-        type: 'position',
-        symbol: 'BTC/USDT',
-        action: 'hold',
-        rationale: 'Current position showing strong momentum. RSI indicates continued strength.',
-        confidence: 82,
-      },
-      {
-        type: 'entry',
-        symbol: 'ETH/USDT',
-        action: 'consider_long',
-        rationale: 'Breaking out of consolidation pattern. Volume confirms strength.',
-        confidence: 75,
-      },
-      {
-        type: 'exit',
-        symbol: 'SOL/USDT',
-        action: 'take_profit',
-        rationale: 'Target reached. Overbought conditions suggest potential reversal.',
-        confidence: 70,
-      },
-    ],
-    market_analysis: {
-      trend: 'Uptrend',
-      volatility: 'Medium',
-      key_levels: {
-        support: 44500,
-        resistance: 47000,
-      },
-    },
-  }
+  const [advisory, setAdvisory] = useState<AdvisoryOutput | null>(null)
+  const [exchangeData, setExchangeData] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
 
-  const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 75) return 'success'
-    if (confidence >= 50) return 'warning'
-    return 'destructive'
-  }
+  const fetchAdvisory = useCallback(async () => {
+    try {
+      const result = await apiClient.getAdvisory(DEFAULT_PAIR)
+      setAdvisory(result.advisory)
+      setExchangeData(result.exchange_data)
+      setError(null)
+      setLastRefresh(new Date())
+    } catch (err) {
+      setError('Unable to load AI advisor. Is the backend running?')
+      console.error('AI advisor fetch error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  const getSentimentBadge = (sentiment: string) => {
-    const variants: Record<string, 'success' | 'destructive' | 'secondary'> = {
+  useEffect(() => {
+    fetchAdvisory()
+    const interval = setInterval(fetchAdvisory, REFRESH_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [fetchAdvisory])
+
+  const getBiasVariant = (bias: string): 'success' | 'destructive' | 'secondary' => {
+    const map: Record<string, 'success' | 'destructive' | 'secondary'> = {
       bullish: 'success',
       bearish: 'destructive',
       neutral: 'secondary',
     }
-    return variants[sentiment] || 'secondary'
+    return map[bias] ?? 'secondary'
   }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">AI Advisor</h1>
-        <p className="text-muted-foreground">
-          AI-powered market analysis and trading guidance
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">AI Advisor</h1>
+          <p className="text-muted-foreground">
+            AI-powered market analysis and trading guidance
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          {lastRefresh.toLocaleTimeString()}
+        </div>
       </div>
 
       <Alert variant="warning">
@@ -74,160 +70,148 @@ export function AIOverview() {
         </AlertDescription>
       </Alert>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Overall Sentiment</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <Badge variant={getSentimentBadge(aiGuidance.overall_sentiment)} className="text-lg px-3 py-1">
-                {aiGuidance.overall_sentiment.toUpperCase()}
-              </Badge>
-              <Brain className="h-8 w-8 text-muted-foreground" />
-            </div>
-          </CardContent>
-        </Card>
+      {!exchangeData && !loading && (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-sm text-blue-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          Exchange not connected — analysis uses default market context. Add <code className="font-mono">EXCHANGE_API_KEY</code> for live data.
+        </div>
+      )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">AI Confidence</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div className="text-3xl font-bold">{aiGuidance.confidence}%</div>
-              <TrendingUp className="h-8 w-8 text-muted-foreground" />
-            </div>
-            <div className="mt-2 h-2 bg-secondary rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-primary transition-all"
-                style={{ width: `${aiGuidance.confidence}%` }}
-              />
-            </div>
-          </CardContent>
-        </Card>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-500">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {error}
+        </div>
+      )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Active Recommendations</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{aiGuidance.recommendations.length}</div>
-            <p className="text-sm text-muted-foreground mt-1">signals detected</p>
-          </CardContent>
-        </Card>
-      </div>
+      {loading && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          Loading AI analysis…
+        </div>
+      )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Market Analysis</CardTitle>
-          <CardDescription>Current market conditions and key levels</CardDescription>
-        </CardHeader>
-        <CardContent>
+      {!loading && advisory && (
+        <>
           <div className="grid gap-4 md:grid-cols-3">
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">Trend</p>
-              <p className="text-2xl font-bold">{aiGuidance.market_analysis.trend}</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">Volatility</p>
-              <p className="text-2xl font-bold">{aiGuidance.market_analysis.volatility}</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">Key Levels</p>
-              <div className="space-y-1 mt-1">
-                <p className="text-sm">
-                  <span className="text-muted-foreground">Support:</span>{' '}
-                  <span className="font-mono">${aiGuidance.market_analysis.key_levels.support}</span>
-                </p>
-                <p className="text-sm">
-                  <span className="text-muted-foreground">Resistance:</span>{' '}
-                  <span className="font-mono">${aiGuidance.market_analysis.key_levels.resistance}</span>
-                </p>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Market Bias</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <Badge variant={getBiasVariant(advisory.bias)} className="text-lg px-3 py-1">
+                    {advisory.bias.toUpperCase()}
+                  </Badge>
+                  <Brain className="h-8 w-8 text-muted-foreground" />
+                </div>
+              </CardContent>
+            </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>AI Recommendations</CardTitle>
-          <CardDescription>Actionable trading signals and guidance</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {aiGuidance.recommendations.map((rec, index) => (
-              <Card key={index}>
-                <CardContent className="pt-6">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h4 className="font-semibold">{rec.symbol}</h4>
-                        <Badge variant={rec.action.includes('long') || rec.action === 'hold' ? 'success' : 'destructive'}>
-                          {rec.action.replace('_', ' ').toUpperCase()}
-                        </Badge>
-                        <Badge variant={getConfidenceColor(rec.confidence)}>
-                          {rec.confidence}% confident
-                        </Badge>
-                      </div>
-                      <p className="text-sm text-muted-foreground">{rec.rationale}</p>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">AI Confidence</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <div className="text-3xl font-bold">{Math.round(advisory.confidence * 100)}%</div>
+                  <TrendingUp className="h-8 w-8 text-muted-foreground" />
+                </div>
+                <div className="mt-2 h-2 bg-secondary rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all"
+                    style={{ width: `${advisory.confidence * 100}%` }}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Suggested Action</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-xl font-bold capitalize">
+                  {advisory.suggested_action.replace(/_/g, ' ')}
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">{DEFAULT_PAIR}</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Signal Scores</CardTitle>
+              <CardDescription>Breakdown of technical, regime, and sentiment analysis</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-4 md:grid-cols-3">
+                {[
+                  { label: 'Technical Score', value: advisory.technical_score },
+                  { label: 'Regime Alignment', value: advisory.regime_alignment },
+                  { label: 'Sentiment Score', value: advisory.sentiment_score },
+                ].map(({ label, value }) => (
+                  <div key={label}>
+                    <p className="text-sm font-medium text-muted-foreground">{label}</p>
+                    <p className="text-2xl font-bold">{(value * 100).toFixed(0)}%</p>
+                    <div className="mt-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-primary transition-all"
+                        style={{ width: `${Math.min(100, Math.abs(value) * 100)}%` }}
+                      />
                     </div>
-                    <Brain className="h-5 w-5 text-muted-foreground ml-4" />
                   </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Strategy Insights</CardTitle>
-          <CardDescription>AI-detected patterns and trends</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3">
-            <div className="flex items-start gap-3">
-              <div className="h-2 w-2 rounded-full bg-green-500 mt-2" />
-              <div>
-                <p className="font-medium">Strong Momentum Detected</p>
-                <p className="text-sm text-muted-foreground">
-                  BTC showing consistent higher highs and higher lows across multiple timeframes
-                </p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <div className="h-2 w-2 rounded-full bg-yellow-500 mt-2" />
-              <div>
-                <p className="font-medium">Volume Confirmation</p>
-                <p className="text-sm text-muted-foreground">
-                  Rising volume supporting the current price action in ETH
-                </p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <div className="h-2 w-2 rounded-full bg-blue-500 mt-2" />
-              <div>
-                <p className="font-medium">Key Support Holding</p>
-                <p className="text-sm text-muted-foreground">
-                  Major support level at $44,500 has been tested and held multiple times
-                </p>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          {advisory.rationale.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Analysis Rationale</CardTitle>
+                <CardDescription>Why the AI has this view</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {advisory.rationale.map((point, i) => (
+                    <div key={i} className="flex items-start gap-3">
+                      <div className="h-2 w-2 rounded-full bg-primary mt-2 shrink-0" />
+                      <p className="text-sm text-muted-foreground">{point}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-      <Alert>
-        <AlertTriangle className="h-4 w-4" />
-        <AlertTitle>Risk Disclaimer</AlertTitle>
-        <AlertDescription>
-          AI recommendations are based on historical data and technical analysis. They do not guarantee future performance.
-          Always use proper risk management and never risk more than you can afford to lose.
-        </AlertDescription>
-      </Alert>
+          {advisory.risks.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Key Risks</CardTitle>
+                <CardDescription>Factors that could invalidate the analysis</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {advisory.risks.map((risk, i) => (
+                    <div key={i} className="flex items-start gap-3">
+                      <div className="h-2 w-2 rounded-full bg-yellow-500 mt-2 shrink-0" />
+                      <p className="text-sm text-muted-foreground">{risk}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Risk Disclaimer</AlertTitle>
+            <AlertDescription>{advisory.disclaimer}</AlertDescription>
+          </Alert>
+        </>
+      )}
     </div>
   )
 }
+

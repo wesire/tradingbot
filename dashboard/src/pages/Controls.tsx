@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { AlertTriangle, Play, Pause, Power, Settings } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -7,12 +7,30 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { apiClient } from "@/api/client"
 
+const REFRESH_INTERVAL_MS = 30_000
+
 export function Controls() {
   const [mode, setMode] = useState<'dry-run' | 'live'>('dry-run')
   const [botStatus, setBotStatus] = useState<'running' | 'paused'>('running')
   const [showModeDialog, setShowModeDialog] = useState(false)
   const [showKillDialog, setShowKillDialog] = useState(false)
   const [pendingMode, setPendingMode] = useState<'dry-run' | 'live'>('dry-run')
+  const fetchStatus = useCallback(async () => {
+    try {
+      const status = await apiClient.getBotStatus()
+      setMode(status.mode as 'dry-run' | 'live')
+      setBotStatus(status.status === 'paused' ? 'paused' : 'running')
+    } catch (err) {
+      console.error('Failed to fetch bot status:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchStatus()
+    const interval = setInterval(fetchStatus, REFRESH_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [fetchStatus])
+
 
   const handleModeToggle = (newMode: 'dry-run' | 'live') => {
     setPendingMode(newMode)

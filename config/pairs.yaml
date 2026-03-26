@@ -22,7 +22,7 @@ pairs:
     strategy: "eth_scalp"
     
   - symbol: "SOL/USDT:USDT"
-    enabled: false  # Disabled by default - enable after backtesting
+    enabled: true
     timeframe: "5m"
     leverage_cap: 8
     stake_allocation: 0.3  # 30% of total capital

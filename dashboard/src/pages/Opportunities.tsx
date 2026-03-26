@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { apiClient } from "@/api/client"
+import { useTimeframe } from "@/context/TimeframeContext"
 import type { Opportunity } from "@/api/client"
 
 const REFRESH_INTERVAL_MS = 60_000
@@ -13,6 +14,7 @@ const REFRESH_INTERVAL_MS = 60_000
 const toConfidencePct = (c: number) => (c > 1 ? c : c * 100)
 
 export function Opportunities() {
+  const { timeframe } = useTimeframe()
   const [filter, setFilter] = useState<'all' | 'long' | 'short'>('all')
   const [opportunities, setOpportunities] = useState<Opportunity[]>([])
   const [loading, setLoading] = useState(true)
@@ -21,7 +23,7 @@ export function Opportunities() {
 
   const fetchOpportunities = useCallback(async () => {
     try {
-      const data = await apiClient.getOpportunities()
+      const data = await apiClient.getOpportunities(timeframe)
       setOpportunities(data)
       setError(null)
       setLastRefresh(new Date())
@@ -37,7 +39,7 @@ export function Opportunities() {
     fetchOpportunities()
     const interval = setInterval(fetchOpportunities, REFRESH_INTERVAL_MS)
     return () => clearInterval(interval)
-  }, [fetchOpportunities])
+  }, [fetchOpportunities, timeframe])
 
   const filteredOpportunities = opportunities.filter(
     opp => filter === 'all' || opp.side === filter

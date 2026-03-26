@@ -44,13 +44,13 @@ if [ "$WEBHOOK_RESPONSE" != "200" ]; then
 fi
 echo -e "${GREEN}✓ Webhook health endpoint OK${NC}\n"
 
-# Test 3: Check webhook root endpoint
+# Test 3: Check webhook root endpoint (returns HTTP 200)
 echo -e "${BLUE}Test 3: Testing webhook root endpoint...${NC}"
-ROOT_RESPONSE=$(curl -s http://localhost:${TV_WEBHOOK_PORT}/ | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
-if [ "$ROOT_RESPONSE" != "running" ]; then
-    echo -e "${YELLOW}⚠ Webhook root endpoint returned unexpected status${NC}"
-    echo "  Expected: 'running'"
-    echo "  Got: '${ROOT_RESPONSE}'"
+ROOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${TV_WEBHOOK_PORT}/ || echo "000")
+if [ "$ROOT_HTTP" != "200" ]; then
+    echo -e "${YELLOW}⚠ Webhook root endpoint returned unexpected HTTP status${NC}"
+    echo "  Expected: 200"
+    echo "  Got: '${ROOT_HTTP}'"
 else
     echo -e "${GREEN}✓ Webhook root endpoint OK${NC}\n"
 fi

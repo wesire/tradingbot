@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle, Bell } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { apiClient, SentimentSpike } from '@/api/client'
+import { apiClient } from '@/api/client'
+import type { SentimentSpike } from '@/api/client'
 
 const BULLISH_THRESHOLD = 0.3
 const BEARISH_THRESHOLD = -0.3

@@ -15,6 +15,9 @@ import type {
   MLFeatureImportance,
   MLBacktestMetrics,
   MLRecentPredictions,
+  MLFeature,
+  RollingAccuracy,
+  MLPrediction,
 } from '@/api/client'
 
 // ---------------------------------------------------------------------------
@@ -130,10 +133,10 @@ export function MLInsights() {
 
   const topFeatures = (featureImportance?.features ?? [])
     .slice(0, 15)
-    .map(f => ({ feature: f.name, importance: f.importance }))
+    .map((f: MLFeature) => ({ feature: f.name, importance: f.importance }))
 
   const confDist = backtestMetrics?.confidence_distribution ?? []
-  const rollingAcc = (backtestMetrics?.rolling_accuracy ?? []).map(p => ({
+  const rollingAcc = (backtestMetrics?.rolling_accuracy ?? []).map((p: RollingAccuracy) => ({
     t: new Date(p.window_start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
     accuracy: +(p.accuracy * 100).toFixed(1),
   }))
@@ -449,7 +452,7 @@ export function MLInsights() {
               </p>
             ) : (
               <div className="space-y-2">
-                {(predictions?.predictions ?? []).map((pred, i) => (
+                {(predictions?.predictions ?? []).map((pred: MLPrediction, i: number) => (
                   <div
                     key={i}
                     className="flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2 text-sm"

@@ -115,10 +115,10 @@ export function MLInsights() {
   }, [fetchData])
 
   // Auto-run backtest on first mount only
-  const backtestRan = useState(false)
+  const [backtestRan, setBacktestRan] = useState(false)
   useEffect(() => {
-    if (!backtestRan[0]) {
-      backtestRan[1](true)
+    if (!backtestRan) {
+      setBacktestRan(true)
       runBacktest()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps

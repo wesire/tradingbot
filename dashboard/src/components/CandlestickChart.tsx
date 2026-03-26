@@ -42,11 +42,8 @@ function CandleShape(props: {
   const { open, close, high, low, isBullish } = payload
   const color = isBullish ? '#22c55e' : '#ef4444'
 
-  // The bar represents the body (open-close). We need to draw the wick separately.
-  const chartHeight = y + height // bottom of the bar area
-  const chartTop = y // top of the bar area
-
-  // We need the price-to-pixel conversion — approximate from the bar bounds
+  // Validate OHLC invariants; skip wick rendering for invalid data
+  const bodyTop = y
   const bodyH = Math.abs(height)
   if (bodyH === 0) return null
 
@@ -54,29 +51,28 @@ function CandleShape(props: {
   if (bodyRange === 0) return null
 
   const pricePerPixel = bodyRange / bodyH
-
-  // Wick positions relative to the bar
-  const wickTopOffset = (Math.max(open, close) - high) / pricePerPixel
-  const wickBottomOffset = (low - Math.min(open, close)) / pricePerPixel
-
   const cx = x + width / 2
-  const wickX = cx
+  const chartBottom = y + height
+
+  // Upper wick: from body top to high
+  const upperWick = (high > Math.max(open, close))
+    ? (Math.max(open, close) - high) / pricePerPixel
+    : 0
+  // Lower wick: from body bottom to low
+  const lowerWick = (low < Math.min(open, close))
+    ? (low - Math.min(open, close)) / pricePerPixel
+    : 0
 
   return (
     <g>
       {/* Upper wick */}
-      <line
-        x1={wickX}
-        y1={chartTop + wickTopOffset}
-        x2={wickX}
-        y2={chartTop}
-        stroke={color}
-        strokeWidth={1}
-      />
+      {upperWick !== 0 && (
+        <line x1={cx} y1={bodyTop + upperWick} x2={cx} y2={bodyTop} stroke={color} strokeWidth={1} />
+      )}
       {/* Candle body */}
       <rect
         x={x + 1}
-        y={chartTop}
+        y={bodyTop}
         width={Math.max(1, width - 2)}
         height={Math.max(1, bodyH)}
         fill={color}
@@ -84,14 +80,9 @@ function CandleShape(props: {
         strokeWidth={0.5}
       />
       {/* Lower wick */}
-      <line
-        x1={wickX}
-        y1={chartHeight}
-        x2={wickX}
-        y2={chartHeight + wickBottomOffset}
-        stroke={color}
-        strokeWidth={1}
-      />
+      {lowerWick !== 0 && (
+        <line x1={cx} y1={chartBottom} x2={cx} y2={chartBottom + lowerWick} stroke={color} strokeWidth={1} />
+      )}
     </g>
   )
 }

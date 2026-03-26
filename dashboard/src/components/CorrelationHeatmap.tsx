@@ -6,13 +6,13 @@ interface CorrelationHeatmapProps {
 }
 
 function heatColor(value: number): string {
-  // -1 → blue, 0 → white/gray, 1 → red
+  // -1 → blue, 0 → dark gray, 1 → red
   if (value >= 0) {
-    const intensity = Math.round(value * 180)
-    return `rgb(${180 + intensity}, ${80 - Math.round(intensity * 0.3)}, ${80 - Math.round(intensity * 0.3)})`
+    const intensity = Math.round(value * 200)
+    return `rgb(${55 + intensity}, ${55 - Math.round(intensity * 0.2)}, ${55 - Math.round(intensity * 0.2)})`
   } else {
-    const intensity = Math.round(-value * 180)
-    return `rgb(${80 - Math.round(intensity * 0.3)}, ${80 - Math.round(intensity * 0.3)}, ${180 + intensity})`
+    const intensity = Math.round(-value * 200)
+    return `rgb(${55 - Math.round(intensity * 0.2)}, ${55 - Math.round(intensity * 0.2)}, ${55 + intensity})`
   }
 }
 
@@ -79,7 +79,7 @@ export function CorrelationHeatmap({ data }: CorrelationHeatmapProps) {
                       width: cellSize,
                       height: cellSize,
                       backgroundColor: heatColor(val),
-                      color: Math.abs(val) > 0.5 ? '#fff' : '#111',
+                      color: '#fff',
                     }}
                   >
                     {val.toFixed(2)}

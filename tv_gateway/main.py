@@ -2000,10 +2000,16 @@ async def get_opportunities(
                     take_profit = entry_price - risk * rr
 
             rationale_list = d.get("rationale", [])
-            ai_rationale = ". ".join(rationale_list) if rationale_list else None
+            # Ensure each item ends with a period before joining
+            normalised = [
+                (r.rstrip(". ") + ".") if r else ""
+                for r in rationale_list if r
+            ]
+            ai_rationale = " ".join(normalised) if normalised else None
 
+            last_updated = d.get("last_updated", "")
             return {
-                "id": f"{d.get('pair', '')}-{idx}",
+                "id": f"{d.get('pair', '')}-{last_updated or idx}",
                 "symbol": d.get("pair", ""),
                 "side": d.get("side", "long"),
                 "confidence": d.get("confidence", 0.0),

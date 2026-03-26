@@ -40,7 +40,9 @@ from bot.sentiment import (
     RedditSentimentProvider,
     TwitterSentimentProvider,
     FearGreedProvider,
+    SentimentSpikeDetector,
 )
+from bot.notifications import NotificationManager, TelegramNotifier, Severity
 from bot.ai_advisor import AIAdvisor
 from bot.opportunities import OpportunityScorer
 from bot.strategy import registry
@@ -265,6 +267,34 @@ def _build_sentiment_providers():
 _sentiment_providers, _sentiment_weights = _build_sentiment_providers()
 sentiment_aggregator = SentimentAggregator(_sentiment_providers, weights=_sentiment_weights)
 sentiment_storage = SentimentStorage()
+
+# Initialize sentiment spike detector from env vars
+_SPIKE_THRESHOLD = float(os.getenv("SENTIMENT_SPIKE_THRESHOLD", "0.3"))
+_SPIKE_WINDOW_MINUTES = int(os.getenv("SENTIMENT_SPIKE_WINDOW_MINUTES", "60"))
+_SPIKE_COOLDOWN_MINUTES = int(os.getenv("SENTIMENT_SPIKE_COOLDOWN_MINUTES", "30"))
+_SPIKE_ALERTS_ENABLED = os.getenv("SENTIMENT_SPIKE_ALERTS_ENABLED", "true").lower() == "true"
+
+spike_detector = SentimentSpikeDetector(
+    spike_threshold=_SPIKE_THRESHOLD,
+    window_minutes=_SPIKE_WINDOW_MINUTES,
+    cooldown_minutes=_SPIKE_COOLDOWN_MINUTES,
+)
+
+
+def _provider_display_name(provider) -> str:
+    """Return a short human-readable name for a sentiment provider instance."""
+    return type(provider).__name__.replace("SentimentProvider", "").replace("Provider", "")
+
+# Initialize notification manager and wire in available notifiers
+notification_manager = NotificationManager(throttle_minutes=5.0)
+_telegram_notifier = TelegramNotifier()
+if _telegram_notifier.is_available():
+    notification_manager.add_notifier("telegram", _telegram_notifier)
+    logger.info("Telegram notifier registered with NotificationManager")
+else:
+    logger.info("Telegram notifier not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set)")
+notification_manager.start()
+
 
 # Initialize broker adapter lazily — only when exchange credentials are configured
 _exchange_api_key = os.getenv("EXCHANGE_API_KEY", "")
@@ -1509,6 +1539,20 @@ async def get_sentiment_summary():
         # Store sentiments
         for asset, sentiment in sentiments.items():
             sentiment_storage.store(sentiment)
+
+        # Run spike detection and dispatch notifications when alerts are enabled
+        if _SPIKE_ALERTS_ENABLED and sentiments:
+            current_scores = {asset: s.score for asset, s in sentiments.items()}
+            provider_names = [_provider_display_name(p) for p in _sentiment_providers]
+            spikes = spike_detector.check_for_spikes(current_scores, sources=provider_names)
+            for spike in spikes:
+                sev = Severity.CRITICAL if spike.severity == "extreme" else Severity.WARNING
+                notification_manager.send_alert(
+                    title=f"Sentiment Spike: {spike.asset}",
+                    message=spike.format_alert(),
+                    severity=sev,
+                    metadata=spike.to_dict(),
+                )
         
         return {
             "success": True,
@@ -1518,6 +1562,34 @@ async def get_sentiment_summary():
         }
     except Exception as e:
         logger.error(f"Error getting sentiment summary: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+
+@app.get("/api/sentiment/spikes")
+async def get_sentiment_spikes():
+    """
+    Return recent spike history, active cooldowns, and detector configuration.
+
+    Returns:
+        {
+            "spikes": [...],
+            "detector_config": {...},
+            "active_cooldowns": [...]
+        }
+    """
+    try:
+        recent_spikes = spike_detector.get_recent_spikes(hours=24)
+        return {
+            "success": True,
+            "spikes": [s.to_dict() for s in recent_spikes],
+            "detector_config": spike_detector.get_config(),
+            "active_cooldowns": spike_detector.get_active_cooldowns(),
+        }
+    except Exception as e:
+        logger.error(f"Error getting sentiment spikes: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "message": str(e)}

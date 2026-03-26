@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle, Bell } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { apiClient } from '@/api/client'
+import { apiClient, SentimentSpike } from '@/api/client'
 
 const BULLISH_THRESHOLD = 0.3
 const BEARISH_THRESHOLD = -0.3
 const REFRESH_INTERVAL_MS = 60_000 // 60 seconds
+const SPIKES_POLL_INTERVAL_MS = 30_000 // 30 seconds
+
 
 function getSentimentColorClass(score: number): string {
   if (score > BULLISH_THRESHOLD) return 'text-green-400'
@@ -69,6 +71,14 @@ function ScoreBadge({ score }: { score: number }) {
   )
 }
 
+function formatScore(score: number): string {
+  return `${score >= 0 ? '+' : ''}${score.toFixed(2)}`
+}
+
+function formatSpikeMessage(spike: SentimentSpike): string {
+  return `${spike.asset} Spike: ${formatScore(spike.old_score)} → ${formatScore(spike.new_score)} (${spike.direction.toUpperCase()}) — ${spike.severity.toUpperCase()}`
+}
+
 export function SentimentWidget() {
   const [combinedScore, setCombinedScore] = useState<number>(0)
   const [providers, setProviders] = useState<string[]>([])
@@ -110,6 +120,42 @@ export function SentimentWidget() {
     return () => clearInterval(interval)
   }, [])
 
+  const [recentSpikes, setRecentSpikes] = useState<SentimentSpike[]>([])
+  const [newSpikeAlert, setNewSpikeAlert] = useState<SentimentSpike | null>(null)
+
+  const fetchSpikes = async () => {
+    try {
+      const data = await apiClient.getSentimentSpikes()
+      const spikes = data.spikes ?? []
+      // If there are newer spikes than what we had, show a toast banner for the latest one
+      if (spikes.length > 0) {
+        const latest = spikes[0]
+        const latestTime = new Date(latest.timestamp).getTime()
+        const now = Date.now()
+        // Show banner only for spikes within the last 5 minutes
+        if (now - latestTime < 5 * 60 * 1000) {
+          setNewSpikeAlert(latest)
+        }
+      }
+      setRecentSpikes(spikes.slice(0, 5))
+    } catch {
+      // Spikes endpoint is optional — silently ignore errors
+    }
+  }
+
+  useEffect(() => {
+    fetchSpikes()
+    const interval = setInterval(fetchSpikes, SPIKES_POLL_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Auto-dismiss the spike banner after 10 seconds, cleaning up on unmount
+  useEffect(() => {
+    if (!newSpikeAlert) return
+    const timerId = setTimeout(() => setNewSpikeAlert(null), 10_000)
+    return () => clearTimeout(timerId)
+  }, [newSpikeAlert])
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -124,6 +170,21 @@ export function SentimentWidget() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Spike alert banner / toast */}
+        {newSpikeAlert && (
+          <div
+            className={`rounded-lg p-3 text-xs font-medium flex items-start gap-2 cursor-pointer
+              ${newSpikeAlert.direction === 'bullish'
+                ? 'bg-green-500/15 text-green-400 border border-green-500/30'
+                : 'bg-red-500/15 text-red-400 border border-red-500/30'}`}
+            onClick={() => setNewSpikeAlert(null)}
+            title="Click to dismiss"
+          >
+            <Bell className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>{formatSpikeMessage(newSpikeAlert)}</span>
+          </div>
+        )}
+
         {loading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-4 justify-center">
             <RefreshCw className="h-4 w-4 animate-spin" />
@@ -189,6 +250,37 @@ export function SentimentWidget() {
               Updated {new Date(lastUpdated).toLocaleTimeString()}
             </div>
           </>
+        )}
+
+        {/* Recent Alerts section */}
+        {recentSpikes.length > 0 && (
+          <div className="border-t border-border pt-3 space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+              <Bell className="h-3 w-3" />
+              Recent Alerts
+            </p>
+            {recentSpikes.map((spike, idx) => (
+              <div
+                key={idx}
+                className={`rounded-md px-2 py-1.5 text-xs flex items-start justify-between gap-2
+                  ${spike.direction === 'bullish'
+                    ? 'bg-green-500/10 text-green-400'
+                    : 'bg-red-500/10 text-red-400'}`}
+              >
+                <span className="font-semibold shrink-0">{spike.asset}</span>
+                <span className="tabular-nums">
+                  {formatScore(spike.old_score)} → {formatScore(spike.new_score)}
+                </span>
+                <span className={`shrink-0 font-bold
+                  ${spike.severity === 'extreme' ? 'text-red-500' : spike.severity === 'major' ? 'text-yellow-400' : ''}`}>
+                  {spike.severity.toUpperCase()}
+                </span>
+                <span className="text-muted-foreground/70 shrink-0">
+                  {new Date(spike.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
       </CardContent>
     </Card>

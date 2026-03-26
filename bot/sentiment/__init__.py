@@ -9,6 +9,7 @@ from .reddit_provider import RedditSentimentProvider
 from .twitter_provider import TwitterSentimentProvider
 from .fear_greed_provider import FearGreedProvider
 from .economic_calendar import EconomicCalendarFilter
+from .spike_detector import SentimentSpikeDetector, SentimentSpike
 
 __all__ = [
     'SentimentProvider',
@@ -21,4 +22,6 @@ __all__ = [
     'TwitterSentimentProvider',
     'FearGreedProvider',
     'EconomicCalendarFilter',
+    'SentimentSpikeDetector',
+    'SentimentSpike',
 ]

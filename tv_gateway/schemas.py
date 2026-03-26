@@ -72,6 +72,7 @@ class HealthResponse(BaseModel):
     sentiment_status: Optional[str] = Field(default=None, description="Sentiment pipeline status: ok | error | disabled")
     webhook_accepting: Optional[bool] = Field(default=None, description="Whether the gateway is accepting webhooks")
     execution_enabled: Optional[bool] = Field(default=None, description="Whether trade execution is enabled")
+    exchange_connected: Optional[bool] = Field(default=None, description="Whether an exchange adapter is connected")
 
 
 class ValidationError(BaseModel):

@@ -319,6 +319,52 @@ class BrokerAdapter:
             symbol
         )
     
+    def fetch_my_trades(
+        self,
+        symbol: Optional[str] = None,
+        since: Optional[int] = None,
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Fetch personal trade history from the exchange.
+
+        Args:
+            symbol: Trading pair symbol (optional — fetch all if None)
+            since: Start timestamp in milliseconds (optional)
+            limit: Maximum number of trades to return
+
+        Returns:
+            List of trade dictionaries
+        """
+        if not self.health_check():
+            if not self.reconnect():
+                raise Exception("Exchange connection unhealthy and reconnection failed")
+
+        return self._handle_request(
+            self.exchange.fetch_my_trades,
+            symbol,
+            since,
+            limit
+        )
+
+    def fetch_positions(self, symbols: Optional[List[str]] = None) -> List[Dict]:
+        """
+        Fetch current open positions from the exchange.
+
+        Args:
+            symbols: List of trading pair symbols to filter (optional)
+
+        Returns:
+            List of position dictionaries
+        """
+        if not self.health_check():
+            if not self.reconnect():
+                raise Exception("Exchange connection unhealthy and reconnection failed")
+
+        if symbols:
+            return self._handle_request(self.exchange.fetch_positions, symbols)
+        return self._handle_request(self.exchange.fetch_positions)
+
     def set_leverage(self, leverage: int, symbol: str) -> Dict:
         """
         Set leverage for symbol.

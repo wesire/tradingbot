@@ -1,4 +1,8 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// In Docker, the dashboard nginx config proxies /api/, /alerts, and /tv/ to
+// the webhook service, so relative URLs work out of the box. For local
+// development (npm run dev), set VITE_API_URL=http://localhost:8000 in your
+// .env file to point directly at the backend.
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? '';
 
 export interface BotStatus {
   status: string;
@@ -32,6 +36,7 @@ export interface Trade {
   price: number;
   pnl?: number;
   status: 'open' | 'closed';
+  source?: 'exchange' | 'alerts';
 }
 
 export interface WebhookEvent {

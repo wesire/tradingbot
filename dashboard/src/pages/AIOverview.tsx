@@ -178,7 +178,7 @@ export function AIOverview() {
             </CardContent>
           </Card>
 
-          {advisory.rationale.length > 0 && (
+          {(advisory.rationale?.length ?? 0) > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle>Analysis Rationale</CardTitle>
@@ -186,7 +186,7 @@ export function AIOverview() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {advisory.rationale.map((point, i) => (
+                  {advisory.rationale?.map((point, i) => (
                     <div key={i} className="flex items-start gap-3">
                       <div className="h-2 w-2 rounded-full bg-primary mt-2 shrink-0" />
                       <p className="text-sm text-muted-foreground">{point}</p>
@@ -197,7 +197,7 @@ export function AIOverview() {
             </Card>
           )}
 
-          {advisory.risks.length > 0 && (
+          {(advisory.risks?.length ?? 0) > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle>Key Risks</CardTitle>
@@ -205,7 +205,7 @@ export function AIOverview() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {advisory.risks.map((risk, i) => (
+                  {advisory.risks?.map((risk, i) => (
                     <div key={i} className="flex items-start gap-3">
                       <div className="h-2 w-2 rounded-full bg-yellow-500 mt-2 shrink-0" />
                       <p className="text-sm text-muted-foreground">{risk}</p>

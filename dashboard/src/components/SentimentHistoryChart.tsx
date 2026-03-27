@@ -18,12 +18,20 @@ interface SentimentHistoryChartProps {
 
 export function SentimentHistoryChart({ data, height = 200 }: SentimentHistoryChartProps) {
   const chartData = useMemo(() =>
-    data.map(p => ({
+    (data ?? []).map(p => ({
       time: new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       score: p.score,
     })),
     [data]
   )
+
+  if (!data) {
+    return (
+      <div className="flex items-center justify-center text-muted-foreground text-sm" style={{ height }}>
+        No sentiment history available
+      </div>
+    )
+  }
 
   if (!chartData.length) {
     return (
@@ -34,7 +42,7 @@ export function SentimentHistoryChart({ data, height = 200 }: SentimentHistoryCh
   }
 
   return (
-    <ResponsiveContainer width="100%" height={height}>
+    <ResponsiveContainer width="100%" height={height} minWidth={0} minHeight={0}>
       <AreaChart data={chartData} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
         <defs>
           <linearGradient id="sentPos" x1="0" y1="0" x2="0" y2="1">

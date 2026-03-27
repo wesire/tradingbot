@@ -64,6 +64,12 @@ download-data: ## Download historical data
 		--timeframes $(shell echo $(TIMEFRAMES) | tr ',' ' ')
 	@echo "$(GREEN)✓ Data download complete$(NC)"
 
+train-model: ## Train the ML signal classifier and save to models/signal_classifier_latest.joblib
+	@echo "$(BLUE)Training ML signal classifier...$(NC)"
+	python scripts/train_model.py
+	@echo "$(GREEN)✓ Model training complete$(NC)"
+	@echo "Model saved to models/signal_classifier_latest.joblib"
+
 backtest: ## Run backtest matrix across timeframes (usage: make backtest PAIR="BTC/USDT:USDT")
 	@echo "$(BLUE)Running backtest matrix...$(NC)"
 	@if [ -z "$(PAIR)" ]; then \

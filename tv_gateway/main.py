@@ -1870,7 +1870,7 @@ async def get_advisor_for_pair(pair: str, timeframe: str = "5m"):
 
 @app.get("/api/opportunities")
 async def get_opportunities(
-    min_confidence: float = 0.3,
+    min_confidence: float = 0.15,
     max_results: int = 10,
     side: Optional[str] = None,
     timeframe: str = "5m"
@@ -1914,13 +1914,30 @@ async def get_opportunities(
                     volume = float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 1000000.0)
 
                     ohlcv_data = broker_adapter.fetch_ohlcv(pair, timeframe=timeframe, limit=50)
-                    closes = [c[4] for c in ohlcv_data if c[4]]
-                    volumes = [c[5] for c in ohlcv_data if c[5]]
+                    # Filter to candles where high, low, close, and volume are all present
+                    valid = [c for c in ohlcv_data if c[2] and c[3] and c[4] and c[5]]
+                    closes = [c[4] for c in valid]
+                    highs = [c[2] for c in valid]
+                    lows = [c[3] for c in valid]
+                    volumes = [c[5] for c in valid]
 
                     rsi_val = _compute_rsi(closes) if closes else 50.0
                     ema21 = _compute_ema(closes, 21) if closes else close_price
                     avg_vol = (sum(volumes) / len(volumes)) if volumes else volume
-                    atr_val = abs(closes[-1] - closes[-2]) if len(closes) >= 2 else 200.0
+                    # Compute True Range average (ATR) using high-low and close-to-close
+                    if len(closes) >= 2 and len(highs) >= 2 and len(lows) >= 2:
+                        true_ranges = []
+                        # Iterate from second-most-recent bar backwards (up to 14 bars)
+                        for i in range(1, min(15, len(closes))):
+                            tr = max(
+                                highs[-i] - lows[-i],
+                                abs(highs[-i] - closes[-i - 1]),
+                                abs(lows[-i] - closes[-i - 1]),
+                            )
+                            true_ranges.append(tr)
+                        atr_val = sum(true_ranges) / len(true_ranges) if true_ranges else abs(closes[-1] - closes[-2])
+                    else:
+                        atr_val = close_price * 0.005  # fallback: 0.5% of price
 
                     technical = {
                         'rsi': round(rsi_val, 2),

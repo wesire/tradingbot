@@ -89,7 +89,7 @@ function CandleShape(props: {
 
 export function CandlestickChart({ candles, height = 300 }: CandlestickChartProps) {
   const data = useMemo<CandleBar[]>(() => {
-    return candles.map(c => ({
+    return (candles ?? []).map(c => ({
       time: new Date(c.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       open: c.open,
       close: c.close,
@@ -119,7 +119,7 @@ export function CandlestickChart({ candles, height = 300 }: CandlestickChartProp
 
   return (
     <div style={{ height }}>
-      <ResponsiveContainer width="100%" height="70%">
+      <ResponsiveContainer width="100%" height="70%" minWidth={0} minHeight={0}>
         <ComposedChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
           <XAxis
@@ -158,7 +158,7 @@ export function CandlestickChart({ candles, height = 300 }: CandlestickChartProp
         </ComposedChart>
       </ResponsiveContainer>
       {/* Volume bars */}
-      <ResponsiveContainer width="100%" height="30%">
+      <ResponsiveContainer width="100%" height="30%" minWidth={0} minHeight={0}>
         <ComposedChart data={data} margin={{ top: 0, right: 8, bottom: 4, left: 8 }}>
           <XAxis dataKey="time" hide />
           <YAxis tick={{ fontSize: 9 }} width={70} tickFormatter={v => String(Math.round(Number(v)))} />

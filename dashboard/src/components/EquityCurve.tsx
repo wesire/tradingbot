@@ -17,7 +17,7 @@ interface EquityCurveProps {
 
 export function EquityCurve({ data, height = 220 }: EquityCurveProps) {
   const chartData = useMemo(() =>
-    data.map(p => ({
+    (data ?? []).map(p => ({
       time: new Date(p.ts).toLocaleDateString([], { month: 'short', day: 'numeric' }),
       equity: p.equity,
     })),
@@ -32,11 +32,11 @@ export function EquityCurve({ data, height = 220 }: EquityCurveProps) {
     )
   }
 
-  const min = Math.min(...data.map(p => p.equity)) * 0.995
-  const max = Math.max(...data.map(p => p.equity)) * 1.005
+  const min = Math.min(...(data ?? []).map(p => p.equity)) * 0.995
+  const max = Math.max(...(data ?? []).map(p => p.equity)) * 1.005
 
   return (
-    <ResponsiveContainer width="100%" height={height}>
+    <ResponsiveContainer width="100%" height={height} minWidth={0} minHeight={0}>
       <AreaChart data={chartData} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
         <defs>
           <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">

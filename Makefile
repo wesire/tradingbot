@@ -7,6 +7,9 @@
 include .env
 export
 
+# Default timeframes for data download (can be overridden via .env or command line)
+TIMEFRAMES ?= 5m,1h,4h
+
 # Colors for output
 BLUE := \033[0;34m
 GREEN := \033[0;32m

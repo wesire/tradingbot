@@ -19,7 +19,7 @@ interface DrawdownChartProps {
 export function DrawdownChart({ data, height = 160 }: DrawdownChartProps) {
   const chartData = useMemo(() => {
     let peak = -Infinity
-    return data.map(p => {
+    return (data ?? []).map(p => {
       if (p.equity > peak) peak = p.equity
       const dd = peak > 0 ? ((p.equity - peak) / peak) * 100 : 0
       return {
@@ -37,10 +37,10 @@ export function DrawdownChart({ data, height = 160 }: DrawdownChartProps) {
     )
   }
 
-  const minDD = Math.min(...chartData.map(d => d.drawdown))
+  const minDD = chartData.length > 0 ? Math.min(...chartData.map(d => d.drawdown)) : 0
 
   return (
-    <ResponsiveContainer width="100%" height={height}>
+    <ResponsiveContainer width="100%" height={height} minWidth={0} minHeight={0}>
       <AreaChart data={chartData} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
         <defs>
           <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">

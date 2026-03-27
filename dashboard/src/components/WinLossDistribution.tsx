@@ -54,7 +54,7 @@ export function WinLossDistribution({ predictions, height = 220 }: WinLossDistri
   }
 
   return (
-    <ResponsiveContainer width="100%" height={height}>
+    <ResponsiveContainer width="100%" height={height} minWidth={0} minHeight={0}>
       <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
         <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
         <XAxis dataKey="label" tick={{ fontSize: 10 }} />

@@ -16,7 +16,7 @@ interface SentimentHistoryChartProps {
   height?: number
 }
 
-export function SentimentHistoryChart({ data, height = 200 }: SentimentHistoryChartProps) {
+export function SentimentHistoryChart({ data = [], height = 200 }: SentimentHistoryChartProps) {
   const chartData = useMemo(() =>
     (data ?? []).map(p => ({
       time: new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -24,14 +24,6 @@ export function SentimentHistoryChart({ data, height = 200 }: SentimentHistoryCh
     })),
     [data]
   )
-
-  if (!data) {
-    return (
-      <div className="flex items-center justify-center text-muted-foreground text-sm" style={{ height }}>
-        No sentiment history available
-      </div>
-    )
-  }
 
   if (!chartData.length) {
     return (

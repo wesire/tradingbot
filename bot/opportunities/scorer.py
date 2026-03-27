@@ -142,7 +142,7 @@ class OpportunityScorer:
         # Determine side bias
         side = self._determine_side(technical_data, regime_data)
         
-        if side is None or confidence < 0.3:
+        if side is None or confidence < 0.1:
             # No clear opportunity
             return None
         
@@ -336,10 +336,14 @@ class OpportunityScorer:
         Returns:
             "long", "short", or None
         """
-        if regime.get('bullish') and technical.get('rsi', 50) < 45:
+        if regime.get('bullish') and technical.get('rsi', 50) <= 55:
             return "long"
-        elif regime.get('bearish') and technical.get('rsi', 50) > 55:
+        elif regime.get('bearish') and technical.get('rsi', 50) >= 45:
             return "short"
+        elif technical.get('rsi', 50) < 35:
+            return "long"  # oversold bounce regardless of regime
+        elif technical.get('rsi', 50) > 65:
+            return "short"  # overbought fade regardless of regime
         else:
             return None
     

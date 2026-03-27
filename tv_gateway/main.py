@@ -33,6 +33,7 @@ from tv_gateway.circuit_breaker import CircuitBreaker, CircuitState
 from tv_gateway.structured_logging import audit_logger
 from tv_gateway.websocket_manager import ws_manager
 from bot.config.default_config import config
+from bot.data_loader import load_ohlcv_from_file
 from bot.sentiment import (
     MockSentimentProvider,
     SentimentAggregator,
@@ -1954,6 +1955,44 @@ async def get_opportunities(
                     }
                 except Exception as pair_err:
                     logger.debug(f"Exchange data unavailable for {pair}: {pair_err}")
+            else:
+                # Try loading real data from downloaded files
+                file_df = load_ohlcv_from_file(pair, timeframe)
+                if file_df is not None and not file_df.empty:
+                    recent = file_df.tail(50)
+                    closes = recent["close"].tolist()
+                    highs = recent["high"].tolist()
+                    lows = recent["low"].tolist()
+                    volumes = recent["volume"].tolist()
+                    close_price = closes[-1]
+                    rsi_val = _compute_rsi(closes)
+                    ema21 = _compute_ema(closes, 21)
+                    avg_vol = sum(volumes) / len(volumes) if volumes else 1.0
+                    if len(closes) >= 2:
+                        true_ranges = []
+                        for i in range(1, min(15, len(closes))):
+                            tr = max(
+                                highs[-i] - lows[-i],
+                                abs(highs[-i] - closes[-i - 1]),
+                                abs(lows[-i] - closes[-i - 1]),
+                            )
+                            true_ranges.append(tr)
+                        atr_val = sum(true_ranges) / len(true_ranges) if true_ranges else abs(closes[-1] - closes[-2])
+                    else:
+                        atr_val = close_price * 0.005
+                    technical = {
+                        'rsi': round(rsi_val, 2),
+                        'price_vs_ema': close_price > ema21,
+                        'volume_above_avg': volumes[-1] > avg_vol if volumes else True,
+                        'filters_passed': True,
+                        'close': round(close_price, 2),
+                        'atr': round(atr_val, 4),
+                    }
+                    regime = {
+                        'bullish': close_price > ema21,
+                        'bearish': close_price < ema21,
+                        'adx': 25.0,
+                    }
 
             pairs_data[pair] = {
                 'timeframe': timeframe,
@@ -2381,28 +2420,45 @@ async def get_ohlcv(pair: str, timeframe: str = "5m", limit: int = 200):
                 for c in raw
             ]
         else:
-            # Demo data when no exchange is connected
-            import random as _random
-            rng = _random.Random(42)
-            now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-            interval_ms = _timeframe_to_ms(timeframe)
-            base = 45000.0
-            candles = []
-            for i in range(limit):
-                ts = now_ts - (limit - i) * interval_ms
-                o = base + rng.uniform(-200, 200)
-                h = o + rng.uniform(0, 300)
-                lo = o - rng.uniform(0, 300)
-                c = lo + rng.uniform(0, h - lo)
-                candles.append({
-                    "timestamp": ts,
-                    "open": round(o, 2),
-                    "high": round(h, 2),
-                    "low": round(lo, 2),
-                    "close": round(c, 2),
-                    "volume": round(rng.uniform(100, 1000), 2),
-                })
-                base = c
+            # Try loading real data from downloaded files first
+            real_df = load_ohlcv_from_file(pair, timeframe)
+            if real_df is not None and not real_df.empty:
+                # Return the most recent `limit` candles
+                real_df = real_df.tail(limit)
+                candles = [
+                    {
+                        "timestamp": int(idx.timestamp() * 1000),
+                        "open": round(float(row["open"]), 2),
+                        "high": round(float(row["high"]), 2),
+                        "low": round(float(row["low"]), 2),
+                        "close": round(float(row["close"]), 2),
+                        "volume": round(float(row["volume"]), 2),
+                    }
+                    for idx, row in real_df.iterrows()
+                ]
+            else:
+                # Demo data when no exchange is connected and no file found
+                import random as _random
+                rng = _random.Random(42)
+                now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+                interval_ms = _timeframe_to_ms(timeframe)
+                base = 45000.0
+                candles = []
+                for i in range(limit):
+                    ts = now_ts - (limit - i) * interval_ms
+                    o = base + rng.uniform(-200, 200)
+                    h = o + rng.uniform(0, 300)
+                    lo = o - rng.uniform(0, 300)
+                    c = lo + rng.uniform(0, h - lo)
+                    candles.append({
+                        "timestamp": ts,
+                        "open": round(o, 2),
+                        "high": round(h, 2),
+                        "low": round(lo, 2),
+                        "close": round(c, 2),
+                        "volume": round(rng.uniform(100, 1000), 2),
+                    })
+                    base = c
 
         return {
             "pair": pair,

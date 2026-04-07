@@ -39,6 +39,7 @@ try:
     from sklearn.ensemble import GradientBoostingClassifier  # type: ignore
     from sklearn.model_selection import StratifiedKFold, cross_validate  # type: ignore
     from sklearn.preprocessing import LabelEncoder  # type: ignore
+    from sklearn.utils.class_weight import compute_sample_weight  # type: ignore
     _HAS_SKLEARN = True
 except ImportError:
     _HAS_SKLEARN = False
@@ -159,6 +160,9 @@ class SignalClassifier:
         self._feature_names = list(X.columns)
         y_enc = self._label_encoder.transform(y)
 
+        # Compute per-sample weights to handle class imbalance
+        sample_weights = compute_sample_weight(class_weight="balanced", y=y_enc)
+
         cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
         cv_results = cross_validate(
             self._model,
@@ -169,8 +173,8 @@ class SignalClassifier:
             return_train_score=False,
         )
 
-        # Train on full dataset
-        self._model.fit(X.values, y_enc)
+        # Train on full dataset with class-balanced sample weights
+        self._model.fit(X.values, y_enc, sample_weight=sample_weights)
 
         metrics = {
             "accuracy_mean": float(cv_results["test_accuracy"].mean()),

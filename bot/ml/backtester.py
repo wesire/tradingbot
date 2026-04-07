@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from bot.data_loader import load_ohlcv_from_file
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -369,7 +371,13 @@ class MLBacktester:
         timeframe: str,
     ) -> BacktestResult:
         if ohlcv_df is None or ohlcv_df.empty:
-            ohlcv_df = self._generate_synthetic_ohlcv(n=2000)
+            real_df = load_ohlcv_from_file(pair, timeframe)
+            if real_df is not None and not real_df.empty:
+                logger.info("Loaded real OHLCV data from file for %s %s (%d rows)", pair, timeframe, len(real_df))
+                ohlcv_df = real_df
+            else:
+                logger.info("No real data file found for %s %s — using synthetic data", pair, timeframe)
+                ohlcv_df = self._generate_synthetic_ohlcv(n=2000)
 
         # Slice by date if requested
         if start_date or end_date:

@@ -270,6 +270,8 @@ def main() -> None:
         n_jobs=-1,
     )
 
+    # Passing fit_params via .fit() is the sklearn 1.4+ way; sklearn slices
+    # sample_weight per fold so class balancing applies throughout CV scoring.
     search.fit(X.values, y_enc, **fit_params)
 
     best_params = search.best_params_

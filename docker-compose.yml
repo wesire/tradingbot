@@ -6,12 +6,13 @@ services:
       dockerfile: Dockerfile
     container_name: btc_scalper_bot
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
       - ./bot/data:/app/bot/data
       - ./artifacts:/app/artifacts
       - ./logs:/app/logs
       - ./user_data:/app/user_data
-      - ./.env:/app/.env:ro
     environment:
       - TRADING_MODE=${TRADING_MODE:-dry_run}
       - EXCHANGE_NAME=${EXCHANGE_NAME:-binance}
@@ -35,10 +36,11 @@ services:
     restart: unless-stopped
     ports:
       - "${TV_WEBHOOK_PORT:-8000}:8000"
+    env_file:
+      - .env
     volumes:
       - ./artifacts:/app/artifacts
       - ./logs:/app/logs
-      - ./.env:/app/.env:ro
     environment:
       - TV_WEBHOOK_SECRET=${TV_WEBHOOK_SECRET}
       - TV_WEBHOOK_PORT=8000
